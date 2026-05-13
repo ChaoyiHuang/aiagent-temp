@@ -1,0 +1,62 @@
+# Dockerfile for ADK Framework (with adk-go integration)
+# ImageVolume pattern: This container provides image content ONLY.
+# Handler Container is the process manager that starts/stops Framework processes.
+#
+# Architecture:
+# ┌─────────────────────────────────────────────────────────────────┐
+# │ Pod (AgentRuntime)                                              │
+# │                                                                 │
+# │  Handler Container mounts this image at /framework-rootfs       │
+# │  Handler starts: /framework-rootfs/adk-framework                │
+# │                                                                 │
+# │  This Container: ENTRYPOINT sleep infinity (just sleeps forever)│
+# │  Provides: adk-framework binary (with adk-go library)           │
+# └─────────────────────────────────────────────────────────────────┘
+FROM golang:1.25-alpine AS builder
+
+# Install git for cloning adk-go
+RUN apk add --no-cache git
+
+WORKDIR /workspace
+
+# Clone adk-go from GitHub
+RUN git clone https://github.com/google/adk-go /adk-go
+
+# Copy aiagent go.mod and go.sum
+COPY go.mod go.sum ./
+
+# Modify replace directive to point to cloned adk-go
+RUN sed -i 's|replace google.golang.org/adk => ../adk-go|replace google.golang.org/adk => /adk-go|' go.mod
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY api/ api/
+COPY pkg/ pkg/
+COPY cmd/ cmd/
+
+# Build ADK Framework binary (with adk-go integration)
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o adk-framework ./cmd/adk-framework
+
+# Final stage
+FROM alpine:3.18
+
+WORKDIR /
+
+# Install necessary tools
+RUN apk --no-cache add ca-certificates tzdata
+
+# Copy ADK Framework binary (Handler will use via ImageVolume)
+COPY --from=builder /workspace/adk-framework /adk-framework
+
+# Create directories (Handler will use these via ImageVolume)
+RUN mkdir -p /shared/workdir /shared/config && \
+    mkdir -p /etc/agent-config
+
+# Default work directory (for Handler's reference)
+ENV WORK_DIR=/shared/workdir
+
+# DUMMY entrypoint - just sleep forever using native sleep command
+# Handler Container starts actual Framework processes using /framework-rootfs/adk-framework
+ENTRYPOINT ["sleep", "infinity"]

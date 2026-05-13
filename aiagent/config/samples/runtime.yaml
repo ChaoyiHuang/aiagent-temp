@@ -1,0 +1,195 @@
+# Sample AgentRuntime for ADK-Go framework (Shared Mode)
+# Single Framework process, multiple agents in same process
+apiVersion: agent.ai/v1
+kind: AgentRuntime
+metadata:
+  name: adk-runtime-sample
+  namespace: default
+spec:
+  processMode: shared  # Single process for multiple agents
+
+  # Handler Container - receives agent requests, manages framework process
+  agentHandler:
+    image: aiagent/adk-handler:latest
+    env:
+    - name: FRAMEWORK_BIN
+      value: "/framework-rootfs/bin/adk-framework"
+    - name: WORK_DIR
+      value: "/shared/workdir"
+    - name: CONFIG_DIR
+      value: "/shared/config"
+
+  # Framework Container - provides image content via ImageVolume
+  # ENTRYPOINT: pause (DUMMY container)
+  agentFramework:
+    image: aiagent/adk-framework:latest
+    type: adk-go
+
+  # Harness references (shared capabilities)
+  harness:
+    model:
+      name: model-harness-deepseek
+      namespace: default
+    memory:
+      name: memory-harness-inmemory
+      namespace: default
+    sandbox:
+      name: sandbox-harness-embedded
+      namespace: default
+
+  replicas: 1
+---
+# Sample AgentRuntime for ADK-Go framework (Isolated Mode)
+# Each agent gets its own Framework process
+apiVersion: agent.ai/v1
+kind: AgentRuntime
+metadata:
+  name: adk-isolated-runtime-sample
+  namespace: default
+spec:
+  processMode: isolated  # Separate process per agent
+
+  agentHandler:
+    image: aiagent/adk-handler:latest
+    env:
+    - name: PROCESS_MODE
+      value: "isolated"
+    - name: FRAMEWORK_BIN
+      value: "/framework-rootfs/bin/adk-framework"
+
+  agentFramework:
+    image: aiagent/adk-framework:latest
+    type: adk-go
+
+  harness:
+    model:
+      name: model-harness-deepseek
+      namespace: default
+
+  replicas: 1
+---
+# Sample AgentRuntime for OpenClaw framework (Gateway Mode)
+# Handler communicates with OpenClaw Gateway via HTTP
+#
+# Architecture:
+# - Each AIAgent → One Gateway process (handler manages multiple instances)
+# - Each Gateway manages internal sub-agents (invisible to Kubernetes)
+# - agentConfig defines Gateway port, internal agents, overrides
+# - Harness provides shared capabilities (Model, Skills, Sandbox)
+apiVersion: agent.ai/v1
+kind: AgentRuntime
+metadata:
+  name: openclaw-runtime-sample
+  namespace: default
+spec:
+  # OpenClaw uses Gateway architecture - each AIAgent gets its own Gateway instance
+  processMode: isolated  # Each Gateway is a separate process
+
+  agentHandler:
+    image: aiagent/openclaw-handler:latest
+    env:
+    - name: BASE_GATEWAY_PORT
+      value: "18789"
+    - name: WORK_DIR
+      value: "/shared/workdir"
+    - name: CONFIG_DIR
+      value: "/shared/config"
+    # Plugin directory for harness-bridge (External Sandbox)
+    - name: PLUGIN_DIR
+      value: "/etc/aiagent/plugins"
+
+  # Framework Container - provides OpenClaw binary via ImageVolume
+  agentFramework:
+    image: aiagent/openclaw-framework:latest
+    type: openclaw
+
+  # Harness references (shared capabilities)
+  # Model and Skills come from Harness CRDs
+  harness:
+    model:
+      name: model-harness-deepseek
+      namespace: default
+    skills:
+      name: skills-harness-local
+      namespace: default
+    memory:
+      name: memory-harness-inmemory
+      namespace: default
+
+  replicas: 1
+---
+# Sample AgentRuntime for OpenClaw with External Sandbox
+# Sandbox is configured via Harness CR (not in agentConfig)
+# Handler generates harness-bridge plugin for tool interception
+#
+# Tool Flow:
+#   Tool call → before_tool_call hook (harness-bridge plugin)
+#            → Check if intercepted (read/write/edit/exec/process)
+#            → If yes: HTTP POST to External Sandbox <endpoint>/tools/<toolName>
+#            → Result embedded in blockReason: REMOTE_EXECUTION_SUCCESS:<json>
+apiVersion: agent.ai/v1
+kind: AgentRuntime
+metadata:
+  name: openclaw-external-sandbox-runtime
+  namespace: default
+spec:
+  processMode: isolated
+
+  agentHandler:
+    image: aiagent/openclaw-handler:latest
+    env:
+    - name: BASE_GATEWAY_PORT
+      value: "18791"
+    - name: WORK_DIR
+      value: "/shared/workdir"
+    - name: CONFIG_DIR
+      value: "/shared/config"
+    - name: PLUGIN_DIR
+      value: "/etc/aiagent/plugins/harness-bridge"
+    # External Sandbox URL (passed to plugin)
+    - name: EXTERNAL_SANDBOX_URL
+      value: "http://sandbox-service.default.svc.cluster.local:9000"
+
+  agentFramework:
+    image: aiagent/openclaw-framework:latest
+    type: openclaw
+
+  harness:
+    model:
+      name: model-harness-openai
+      namespace: default
+    skills:
+      name: skills-harness-local
+      namespace: default
+    # External Sandbox Harness - enables tool interception
+    sandbox:
+      name: sandbox-harness-external
+      namespace: default
+
+  replicas: 1
+---
+# Sample AgentRuntime for Custom framework
+apiVersion: agent.ai/v1
+kind: AgentRuntime
+metadata:
+  name: custom-runtime-sample
+  namespace: default
+spec:
+  processMode: isolated
+
+  agentHandler:
+    image: my-org/my-handler:latest
+    env:
+    - name: CUSTOM_FRAMEWORK_ENDPOINT
+      value: "localhost:9000"
+
+  agentFramework:
+    image: my-org/my-framework:latest
+    type: custom
+
+  harness:
+    model:
+      name: model-harness-deepseek
+      namespace: default
+
+  replicas: 1

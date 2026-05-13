@@ -1,0 +1,42 @@
+# Dockerfile for Config Daemon
+# Config Daemon watches AIAgent CRDs and syncs AgentConfig to hostPath
+# NOTE: Must run as root to write to hostPath directories
+FROM golang:1.25-alpine AS builder
+
+# Install git for cloning adk-go
+RUN apk add --no-cache git
+
+WORKDIR /workspace
+
+# Clone adk-go from GitHub
+RUN git clone https://github.com/google/adk-go /adk-go
+
+# Copy aiagent go.mod and go.sum
+COPY go.mod go.sum ./
+
+# Modify replace directive to point to cloned adk-go
+RUN sed -i 's|replace google.golang.org/adk => ../adk-go|replace google.golang.org/adk => /adk-go|' go.mod
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY api/ api/
+COPY pkg/ pkg/
+COPY cmd/ cmd/
+
+# Build config-daemon binary
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o config-daemon ./cmd/config-daemon
+
+# Final stage
+FROM alpine:3.18
+
+WORKDIR /
+RUN apk --no-cache add ca-certificates tzdata
+
+COPY --from=builder /workspace/config-daemon .
+
+# Config Daemon needs root privileges to write to hostPath
+# Do not set USER here - run as root by default
+
+ENTRYPOINT ["/config-daemon"]

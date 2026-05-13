@@ -1,0 +1,131 @@
+# Test Case 2: ADK Isolated Process Mode (每进程一个Agent)
+# Architecture (Solution M - hostPath + Config Daemon):
+# ┌─────────────────────────────────────────────────────────────────┐
+# │ Config Daemon (DaemonSet on same node)                          │
+# │  - Watches AIAgent CRDs via Informer                            │
+# │  - Writes AgentConfig to hostPath                               │
+# │  - Path: /var/lib/aiagent/configs/<namespace>/<agent-name>/     │
+# │  - Files: agent-config.json, agent-meta.yaml                    │
+# │                                                                 │
+# │ Pod (AgentRuntime)                                              │
+# │  - Mounts hostPath as /etc/agent-config                         │
+# │  Handler Container                                              │
+# │    - ProcessMode: isolated                                      │
+# │    - Reads agent-index.yaml to discover agents                  │
+# │    - Reads agent-config.json for each agent                     │
+# │    - Starts Framework process per agent                         │
+# │    - Handler manages multiple process instances                 │
+# │                                                                 │
+# │  Framework Container (DUMMY)                                    │
+# │    - ENTRYPOINT: pause                                          │
+# │    - ImageVolume provides binary                                │
+# └─────────────────────────────────────────────────────────────────┘
+#
+# Each AIAgent gets its own Framework process
+
+---
+# Harness for Model
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  namespace: aiagent-system
+  name: adk-isolated-model
+spec:
+  type: model
+  model:
+    provider: deepseek
+    endpoint: https://api.deepseek.com/v1
+    defaultModel: deepseek-chat
+    models:
+    - name: deepseek-chat
+      allowed: true
+    - name: deepseek-coder
+      allowed: true
+
+---
+# AgentRuntime for ADK Isolated Mode
+apiVersion: agent.ai/v1
+kind: AgentRuntime
+metadata:
+  namespace: aiagent-system
+  name: adk-isolated-runtime
+spec:
+  processMode: isolated
+
+  agentHandler:
+    image: aiagent/adk-handler:test
+    env:
+    - name: PROCESS_MODE
+      value: isolated
+
+  agentFramework:
+    image: aiagent/adk-framework:test
+    type: adk
+
+  harness:
+  - name: adk-isolated-model
+
+  replicas: 1
+
+---
+# AIAgent 1 (gets its own Framework process) with agentConfig
+apiVersion: agent.ai/v1
+kind: AIAgent
+metadata:
+  namespace: aiagent-system
+  name: isolated-agent-1
+  labels:
+    runtime: adk-isolated-runtime
+spec:
+  description: "First agent with isolated process"
+  runtimeRef:
+    type: adk
+    name: adk-isolated-runtime
+  agentConfig:
+    instruction: "You are a specialized AI assistant for data analysis."
+    model: "deepseek-chat"
+    tools:
+    - name: "data_processor"
+      type: "transform"
+
+---
+# AIAgent 2 (gets its own Framework process) with agentConfig
+apiVersion: agent.ai/v1
+kind: AIAgent
+metadata:
+  namespace: aiagent-system
+  name: isolated-agent-2
+  labels:
+    runtime: adk-isolated-runtime
+spec:
+  description: "Second agent with isolated process"
+  runtimeRef:
+    type: adk
+    name: adk-isolated-runtime
+  agentConfig:
+    instruction: "You are a specialized AI assistant for code generation."
+    model: "deepseek-coder"
+    tools:
+    - name: "code_generator"
+      type: "synthesize"
+
+---
+# AIAgent 3 (gets its own Framework process) with agentConfig
+apiVersion: agent.ai/v1
+kind: AIAgent
+metadata:
+  namespace: aiagent-system
+  name: isolated-agent-3
+  labels:
+    runtime: adk-isolated-runtime
+spec:
+  description: "Third agent with isolated process"
+  runtimeRef:
+    type: adk
+    name: adk-isolated-runtime
+  agentConfig:
+    instruction: "You are a specialized AI assistant for documentation."
+    model: "deepseek-chat"
+    tools:
+    - name: "doc_writer"
+      type: "generate"

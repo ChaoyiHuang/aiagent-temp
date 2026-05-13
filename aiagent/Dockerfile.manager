@@ -1,0 +1,41 @@
+# Dockerfile for AI Agent Controller Manager
+FROM golang:1.25-alpine AS builder
+
+# Install git for cloning adk-go
+RUN apk add --no-cache git
+
+WORKDIR /workspace
+
+# Clone adk-go from GitHub
+RUN git clone https://github.com/google/adk-go /adk-go
+
+# Copy aiagent go.mod and go.sum
+COPY go.mod go.sum ./
+
+# Modify replace directive to point to cloned adk-go
+RUN sed -i 's|replace google.golang.org/adk => ../adk-go|replace google.golang.org/adk => /adk-go|' go.mod
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY api/ api/
+COPY pkg/ pkg/
+COPY cmd/ cmd/
+
+# Build manager binary
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager ./cmd/manager
+
+# Final stage
+FROM alpine:3.18
+
+WORKDIR /
+RUN apk --no-cache add ca-certificates tzdata
+
+COPY --from=builder /workspace/manager .
+
+# Create non-root user
+RUN adduser -D -u 1000 manager
+USER 1000
+
+ENTRYPOINT ["/manager"]

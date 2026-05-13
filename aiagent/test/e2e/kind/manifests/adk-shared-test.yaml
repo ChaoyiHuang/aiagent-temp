@@ -1,0 +1,113 @@
+# Test Case 1: ADK Shared Process Mode (单进程多Agent)
+# Architecture (Solution M - hostPath + Config Daemon):
+# ┌─────────────────────────────────────────────────────────────────┐
+# │ Config Daemon (DaemonSet on same node)                          │
+# │  - Watches AIAgent CRDs via Informer                            │
+# │  - Writes AgentConfig to hostPath                               │
+# │  - Path: /var/lib/aiagent/configs/<namespace>/<agent-name>/     │
+# │  - Files: agent-config.json, agent-meta.yaml                    │
+# │                                                                 │
+# │ Pod (AgentRuntime)                                              │
+# │  - Mounts hostPath as /etc/agent-config                         │
+# │  Handler Container                                              │
+# │    - ProcessMode: shared                                        │
+# │    - Reads agent-index.yaml to discover agents                  │
+# │    - Reads agent-config.json for each agent                     │
+# │    - Starts single Framework process                            │
+# │    - Framework runs all agents internally                       │
+# │                                                                 │
+# │  Framework Container (DUMMY)                                    │
+# │    - ENTRYPOINT: pause                                          │
+# │    - ImageVolume provides binary at /framework-rootfs           │
+# └─────────────────────────────────────────────────────────────────┘
+
+---
+# Harness for Model
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  name: adk-shared-model
+  namespace: aiagent-system
+spec:
+  type: model
+  model:
+    provider: openai
+    endpoint: https://api.openai.com/v1
+    defaultModel: gpt-4
+    models:
+    - name: gpt-4
+      allowed: true
+    - name: gpt-3.5-turbo
+      allowed: true
+
+---
+# AgentRuntime for ADK Shared Mode
+apiVersion: agent.ai/v1
+kind: AgentRuntime
+metadata:
+  name: adk-shared-runtime
+  namespace: aiagent-system
+spec:
+  processMode: shared
+
+  agentHandler:
+    image: aiagent/adk-handler:test
+    env:
+    - name: PROCESS_MODE
+      value: shared
+
+  agentFramework:
+    image: aiagent/adk-framework:test
+    type: adk
+
+  harness:
+  - name: adk-shared-model
+
+  replicas: 1
+
+---
+# AIAgent 1 with agentConfig (ADK-specific configuration)
+apiVersion: agent.ai/v1
+kind: AIAgent
+metadata:
+  name: shared-agent-1
+  namespace: aiagent-system
+  labels:
+    runtime: adk-shared-runtime
+spec:
+  description: "First agent in shared process mode"
+  runtimeRef:
+    type: adk
+    name: adk-shared-runtime
+  # Framework-specific configuration (ADK format)
+  # This JSON is written to hostPath by Config Daemon
+  # Handler reads it and generates ADK agent.yaml
+  agentConfig:
+    instruction: "You are a helpful AI assistant specialized in general tasks."
+    model: "gpt-4"
+    tools:
+    - name: "search"
+      type: "web_search"
+    - name: "calculator"
+      type: "math"
+
+---
+# AIAgent 2 with agentConfig
+apiVersion: agent.ai/v1
+kind: AIAgent
+metadata:
+  name: shared-agent-2
+  namespace: aiagent-system
+  labels:
+    runtime: adk-shared-runtime
+spec:
+  description: "Second agent in shared process mode"
+  runtimeRef:
+    type: adk
+    name: adk-shared-runtime
+  agentConfig:
+    instruction: "You are a helpful AI assistant specialized in code analysis."
+    model: "gpt-4"
+    tools:
+    - name: "code_analyzer"
+      type: "static_analysis"

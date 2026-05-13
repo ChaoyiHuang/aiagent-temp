@@ -1,0 +1,203 @@
+# Sample Model Harness for DeepSeek
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  name: model-harness-deepseek
+  namespace: default
+spec:
+  type: model
+  model:
+    provider: deepseek
+    endpoint: https://api.deepseek.com
+    authSecretRef: deepseek-api-key-secret
+    defaultModel: deepseek-chat
+    models:
+    - name: deepseek-chat
+      allowed: true
+      maxTokens: 8192
+    - name: deepseek-reasoner
+      allowed: true
+      maxTokens: 16384
+    rateLimit:
+      requestsPerMinute: 60
+      tokensPerMinute: 100000
+---
+# Sample Model Harness for OpenAI
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  name: model-harness-openai
+  namespace: default
+spec:
+  type: model
+  model:
+    provider: openai
+    endpoint: https://api.openai.com/v1
+    authSecretRef: openai-api-key-secret
+    defaultModel: gpt-4o
+    models:
+    - name: gpt-4o
+      allowed: true
+      maxTokens: 8192
+    - name: gpt-4o-mini
+      allowed: true
+      maxTokens: 4096
+---
+# Sample Memory Harness (InMemory)
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  name: memory-harness-inmemory
+  namespace: default
+spec:
+  type: memory
+  memory:
+    type: inmemory
+    ttl: 3600
+    maxSize: 1048576
+---
+# Sample Memory Harness (Redis)
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  name: memory-harness-redis
+  namespace: default
+spec:
+  type: memory
+  memory:
+    type: redis
+    endpoint: redis://redis-service:6379
+    authSecretRef: redis-auth-secret
+    ttl: 7200
+    persistenceEnabled: true
+---
+# Sample Sandbox Harness (Embedded Mode)
+# Uses local container isolation (gvisor, kata, etc.)
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  name: sandbox-harness-embedded
+  namespace: default
+spec:
+  type: sandbox
+  sandbox:
+    type: gvisor
+    mode: embedded
+    timeout: 300
+    resourceLimits:
+      cpu: "1"
+      memory: "512Mi"
+      pids: 100
+    networkPolicy:
+      allowOutbound: true
+      allowInbound: false
+---
+# Sample Sandbox Harness (External Mode)
+# Routes tool calls to External Sandbox HTTP API
+# Handler generates harness-bridge plugin for OpenClaw integration
+#
+# Tool Interception (by harness-bridge plugin):
+#   Intercepted → External Sandbox:
+#     - read, write, edit, apply_patch: File operations (data isolation)
+#     - exec, process: Shell execution (code isolation)
+#   Gateway Local (not intercepted):
+#     - memory_search, memory_get: Memory backend (Gateway database)
+#     - sessions_*: Session management (Gateway control)
+#     - web_search, web_fetch: Web operations (safe)
+#     - cron, gateway: Gateway management (Gateway core)
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  name: sandbox-harness-external
+  namespace: default
+spec:
+  type: sandbox
+  sandbox:
+    type: custom
+    mode: external
+    # External Sandbox API endpoint
+    # Plugin sends HTTP POST to: <endpoint>/tools/<toolName>
+    endpoint: "http://sandbox-service.default.svc.cluster.local:9000"
+    # Authentication via Secret reference
+    authSecretRef: sandbox-api-key-secret
+    # Execution timeout in seconds
+    timeout: 30
+    resourceLimits:
+      cpu: "2"
+      memory: "2Gi"
+      pids: 200
+    networkPolicy:
+      allowOutbound: true
+      allowInbound: false
+      allowedHosts:
+      - "api.openai.com"
+      - "api.deepseek.com"
+---
+# Sample Skills Harness (Local)
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  name: skills-harness-local
+  namespace: default
+spec:
+  type: skills
+  skills:
+    hubType: local
+    localPath: /skills
+    skills:
+    - name: web-search
+      version: "1.0.0"
+      allowed: true
+    - name: code-execution
+      version: "1.0.0"
+      allowed: true
+    - name: weather
+      version: "1.0.0"
+      allowed: true
+    - name: calculator
+      version: "1.0.0"
+      allowed: true
+---
+# Sample Skills Harness (Remote)
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  name: skills-harness-remote
+  namespace: default
+spec:
+  type: skills
+  skills:
+    hubType: external
+    endpoint: https://skills-hub.example.com
+    skills:
+    - name: advanced-analysis
+      version: "2.0.0"
+      allowed: true
+---
+# Secrets for API keys (examples)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: deepseek-api-key-secret
+  namespace: default
+type: Opaque
+stringData:
+  api-key: "your-deepseek-api-key-here"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openai-api-key-secret
+  namespace: default
+type: Opaque
+stringData:
+  api-key: "your-openai-api-key-here"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sandbox-api-key-secret
+  namespace: default
+type: Opaque
+stringData:
+  api-key: "your-sandbox-api-key-here"
