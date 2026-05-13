@@ -25,17 +25,14 @@ spec:
     image: aiagent/adk-framework:latest
     type: adk-go
 
-  # Harness references (shared capabilities)
+  # Harness references (shared capabilities) - array of HarnessReference
   harness:
-    model:
-      name: model-harness-deepseek
-      namespace: default
-    memory:
-      name: memory-harness-inmemory
-      namespace: default
-    sandbox:
-      name: sandbox-harness-embedded
-      namespace: default
+  - name: model-harness-deepseek
+    namespace: default
+  - name: memory-harness-inmemory
+    namespace: default
+  - name: sandbox-harness-embedded
+    namespace: default
 
   replicas: 1
 ---
@@ -61,10 +58,10 @@ spec:
     image: aiagent/adk-framework:latest
     type: adk-go
 
+  # Harness references - array of HarnessReference
   harness:
-    model:
-      name: model-harness-deepseek
-      namespace: default
+  - name: model-harness-deepseek
+    namespace: default
 
   replicas: 1
 ---
@@ -103,18 +100,15 @@ spec:
     image: aiagent/openclaw-framework:latest
     type: openclaw
 
-  # Harness references (shared capabilities)
+  # Harness references (shared capabilities) - array of HarnessReference
   # Model and Skills come from Harness CRDs
   harness:
-    model:
-      name: model-harness-deepseek
-      namespace: default
-    skills:
-      name: skills-harness-local
-      namespace: default
-    memory:
-      name: memory-harness-inmemory
-      namespace: default
+  - name: model-harness-deepseek
+    namespace: default
+  - name: skills-harness-local
+    namespace: default
+  - name: memory-harness-inmemory
+    namespace: default
 
   replicas: 1
 ---
@@ -154,17 +148,15 @@ spec:
     image: aiagent/openclaw-framework:latest
     type: openclaw
 
+  # Harness references - array of HarnessReference
   harness:
-    model:
-      name: model-harness-openai
-      namespace: default
-    skills:
-      name: skills-harness-local
-      namespace: default
-    # External Sandbox Harness - enables tool interception
-    sandbox:
-      name: sandbox-harness-external
-      namespace: default
+  - name: model-harness-openai
+    namespace: default
+  - name: skills-harness-local
+    namespace: default
+  # External Sandbox Harness - enables tool interception
+  - name: sandbox-harness-external
+    namespace: default
 
   replicas: 1
 ---
@@ -187,9 +179,9 @@ spec:
     image: my-org/my-framework:latest
     type: custom
 
+  # Harness references - array of HarnessReference
   harness:
-    model:
-      name: model-harness-deepseek
-      namespace: default
+  - name: model-harness-deepseek
+    namespace: default
 
   replicas: 1

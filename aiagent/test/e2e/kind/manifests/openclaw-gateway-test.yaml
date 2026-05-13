@@ -143,21 +143,17 @@ spec:
     image: aiagent/openclaw-framework:test  # OpenClaw v2026.3.8
     type: openclaw
 
-  # Harness references (shared capabilities)
+  # Harness references (shared capabilities) - array of HarnessReference
   harness:
-    model:
-      name: openclaw-model
-      namespace: aiagent-system
-    skills:
-      name: openclaw-skills
-      namespace: aiagent-system
-    memory:
-      name: openclaw-memory
-      namespace: aiagent-system
-    # Optional: External Sandbox
-    # sandbox:
-    #   name: openclaw-sandbox-external
-    #   namespace: aiagent-system
+  - name: openclaw-model
+    namespace: aiagent-system
+  - name: openclaw-skills
+    namespace: aiagent-system
+  - name: openclaw-memory
+    namespace: aiagent-system
+  # Optional: External Sandbox
+  # - name: openclaw-sandbox-external
+  #   namespace: aiagent-system
 
   replicas: 1
 
