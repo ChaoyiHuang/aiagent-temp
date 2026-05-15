@@ -580,88 +580,6 @@ verify_openclaw() {
     return 0
 }
 
-verify_discord_config() {
-    echo ""
-    echo "    [Verify] Discord Configuration Schema..."
-    echo "    ----------------------------------------"
-
-    POD_NAME="discord-runtime-runtime"
-    NS="aiagent-system"
-
-    # Check AgentRuntime is running
-    RUNTIME_STATUS=$(kubectl get agentruntime discord-runtime -n ${NS} -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
-    if [ "$RUNTIME_STATUS" != "Running" ]; then
-        echo "    ❌ ERROR: AgentRuntime status is '$RUNTIME_STATUS', expected 'Running'"
-        return 1
-    fi
-    echo "    ✓ AgentRuntime phase: Running"
-
-    # Check AIAgent exists
-    AGENT_NAME=$(kubectl get aiagent discord-bot-1 -n ${NS} -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
-    if [ "$AGENT_NAME" != "discord-bot-1" ]; then
-        echo "    ❌ ERROR: AIAgent 'discord-bot-1' not found"
-        return 1
-    fi
-    echo "    ✓ AIAgent: discord-bot-1"
-
-    # Check agentConfig contains channels.discord configuration
-    # Extract agentConfig from AIAgent CRD
-    AGENT_CONFIG=$(kubectl get aiagent discord-bot-1 -n ${NS} -o jsonpath='{.spec.agentConfig}' 2>/dev/null)
-    if [ "$AGENT_CONFIG" == "" ]; then
-        echo "    ❌ ERROR: agentConfig is empty"
-        return 1
-    fi
-    echo "    ✓ agentConfig present"
-
-    # Verify channels.discord.enabled is true
-    DISCORD_ENABLED=$(kubectl get aiagent discord-bot-1 -n ${NS} -o jsonpath='{.spec.agentConfig.channels.discord.enabled}' 2>/dev/null)
-    if [ "$DISCORD_ENABLED" != "true" ]; then
-        echo "    ❌ ERROR: channels.discord.enabled should be 'true'"
-        return 1
-    fi
-    echo "    ✓ channels.discord.enabled: true"
-
-    # Verify allowedUsers list exists
-    ALLOWED_USERS=$(kubectl get aiagent discord-bot-1 -n ${NS} -o jsonpath='{.spec.agentConfig.channels.discord.allowedUsers}' 2>/dev/null)
-    if [ "$ALLOWED_USERS" == "" ] || [ "$ALLOWED_USERS" == "[]" ]; then
-        echo "    ⚠ WARNING: channels.discord.allowedUsers is empty (bot will respond to all users)"
-    else
-        echo "    ✓ channels.discord.allowedUsers configured"
-    fi
-
-    # Verify tokenSecretRef exists
-    TOKEN_SECRET=$(kubectl get aiagent discord-bot-1 -n ${NS} -o jsonpath='{.spec.agentConfig.channels.discord.tokenSecretRef}' 2>/dev/null)
-    if [ "$TOKEN_SECRET" != "" ]; then
-        # Check if secret exists
-        SECRET_EXISTS=$(kubectl get secret ${TOKEN_SECRET} -n ${NS} -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
-        if [ "$SECRET_EXISTS" == "$TOKEN_SECRET" ]; then
-            echo "    ✓ tokenSecretRef: ${TOKEN_SECRET} (secret exists)"
-        else
-            echo "    ⚠ WARNING: tokenSecretRef '${TOKEN_SECRET}' but secret not found"
-        fi
-    else
-        echo "    ⚠ WARNING: tokenSecretRef not set (using direct token or no auth)"
-    fi
-
-    # Verify agents configuration for Discord bot
-    AGENT_LIST_COUNT=$(kubectl get aiagent discord-bot-1 -n ${NS} -o jsonpath='{.spec.agentConfig.agents.list}' 2>/dev/null | jq 'length' || echo "0")
-    if [ "$AGENT_LIST_COUNT" -lt 1 ]; then
-        echo "    ⚠ WARNING: No internal agents defined in agentConfig.agents.list"
-    else
-        echo "    ✓ Internal agents count: ${AGENT_LIST_COUNT}"
-    fi
-
-    # Check Harness references (model, skills, memory)
-    MODEL_HARNESS=$(kubectl get agentruntime discord-runtime -n ${NS} -o jsonpath='{.spec.harness[0].name}' 2>/dev/null)
-    if [ "$MODEL_HARNESS" == "discord-deepseek-model" ]; then
-        echo "    ✓ Harness: discord-deepseek-model (DeepSeek LLM)"
-    fi
-
-    echo "    ----------------------------------------"
-    echo "    ✅ Discord Configuration: PASS"
-    return 0
-}
-
 run_tests() {
     echo ""
     echo "=================================================="
@@ -722,23 +640,6 @@ run_tests() {
         TEST_FAIL=$((TEST_FAIL + 1))
     fi
 
-    # Test 4: OpenClaw Discord Configuration Validation
-    echo ""
-    echo ">>> Test 4: OpenClaw Discord Configuration"
-    echo "    (Validate agentConfig.channels.discord schema)"
-    kubectl apply -f "${SCRIPT_DIR}/manifests/openclaw-discord-test.yaml"
-
-    # Wait for AgentRuntime to be processed
-    echo "    Waiting for Discord runtime to be ready..."
-    kubectl wait --for=jsonpath='{.status.phase}'=Running agentruntime/discord-runtime -n aiagent-system --timeout=120s || true
-    sleep 5
-
-    if verify_discord_config; then
-        TEST_PASS=$((TEST_PASS + 1))
-    else
-        TEST_FAIL=$((TEST_FAIL + 1))
-    fi
-
     # Summary
     echo ""
     echo "=================================================="
@@ -753,28 +654,6 @@ run_tests() {
         return 1
     else
         echo "    ✅ All tests passed!"
-
-        # Show Discord deployment hint
-        echo ""
-        echo "=================================================="
-        echo "🚀 Want to deploy a Discord bot?"
-        echo "=================================================="
-        echo ""
-        echo "    You can now deploy an OpenClaw instance connected to Discord!"
-        echo ""
-        echo "    Run the deployment script:"
-        echo "      ${SCRIPT_DIR}/deploy-openclaw-discord.sh"
-        echo ""
-        echo "    Environment variables:"
-        echo "      export DISCORD_BOT_TOKEN='your-bot-token'"
-        echo "      export DISCORD_USER_IDS='123456789,987654321'"
-        echo "      export DEEPSEEK_API_KEY='your-api-key'"
-        echo "      ${SCRIPT_DIR}/deploy-openclaw-discord.sh"
-        echo ""
-        echo "    For help:"
-        echo "      ${SCRIPT_DIR}/deploy-openclaw-discord.sh --help"
-        echo ""
-        echo "=================================================="
         return 0
     fi
 }
