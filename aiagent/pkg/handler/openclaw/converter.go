@@ -54,6 +54,10 @@ func (c *ConfigConverter) ConvertToOpenClawConfig(spec *v1.AIAgentSpec, harnessC
 		if agentConfig.Overrides != nil {
 			c.applyAgentOverrides(config, agentConfig.Overrides)
 		}
+		// Apply channels configuration (Discord, Telegram, Slack)
+		if agentConfig.Channels != nil {
+			config.Channels = c.convertChannelsConfig(agentConfig.Channels)
+		}
 	}
 
 	// 2. Apply Harness configuration (shared platform capabilities)
@@ -61,7 +65,9 @@ func (c *ConfigConverter) ConvertToOpenClawConfig(spec *v1.AIAgentSpec, harnessC
 		config.Agents.Defaults = c.convertAgentDefaultsFromHarness(harnessCfg)
 		config.Models = c.convertModelsConfig(harnessCfg)
 		config.Skills = c.convertSkillsConfig(harnessCfg)
-		config.Memory = c.convertMemoryConfig(harnessCfg)
+		// Memory config not supported in OpenClaw v2026.5.7 config schema
+		// OpenClaw uses internal session management
+		// config.Memory = c.convertMemoryConfig(harnessCfg)
 		config.Sandbox = c.convertSandboxConfig(harnessCfg)
 		// If external sandbox, set plugins path
 		if config.Sandbox != nil && config.Sandbox.Mode == "external" && config.Sandbox.Plugins != nil {
@@ -157,6 +163,66 @@ type AgentConfigJSON struct {
 
 	// Per-agent overrides of inherited Harness defaults
 	Overrides *AgentOverridesConfigJSON `json:"overrides,omitempty"`
+
+	// Channel integrations (Discord, Telegram, Slack)
+	Channels *ChannelsInstanceConfigJSON `json:"channels,omitempty"`
+}
+
+// ChannelsInstanceConfigJSON - Channel integrations for this Gateway instance
+type ChannelsInstanceConfigJSON struct {
+	// Discord channel configuration
+	Discord *DiscordChannelConfigJSON `json:"discord,omitempty"`
+
+	// Telegram channel configuration
+	Telegram *TelegramChannelConfigJSON `json:"telegram,omitempty"`
+
+	// Slack channel configuration
+	Slack *SlackChannelConfigJSON `json:"slack,omitempty"`
+}
+
+// DiscordChannelConfigJSON - Discord channel configuration from agentConfig
+type DiscordChannelConfigJSON struct {
+	// Enable Discord integration
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Discord bot token (can reference secret or use direct value)
+	Token string `json:"token,omitempty"`
+
+	// Secret reference for bot token (recommended for production)
+	TokenSecretRef string `json:"tokenSecretRef,omitempty"`
+
+	// Allowed Discord user IDs (whitelist)
+	// Accept both "allowedUsers" (legacy) and "allowFrom" (v2026.5.7)
+	AllowedUsers []string `json:"allowedUsers,omitempty"`
+	AllowFrom    []string `json:"allowFrom,omitempty"`
+
+	// DM policy for direct messages
+	DmPolicy string `json:"dmPolicy,omitempty"`
+
+	// Allowed Discord guild/server IDs (whitelist)
+	AllowedGuilds []string `json:"allowedGuilds,omitempty"`
+
+	// Allowed Discord channel IDs (whitelist)
+	AllowedChannels []string `json:"allowedChannels,omitempty"`
+
+	// Bot command prefix
+	CommandPrefix string `json:"commandPrefix,omitempty"`
+}
+
+// TelegramChannelConfigJSON - Telegram channel configuration from agentConfig
+type TelegramChannelConfigJSON struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Token   string `json:"token,omitempty"`
+	TokenSecretRef string `json:"tokenSecretRef,omitempty"`
+	AllowedUsers []string `json:"allowedUsers,omitempty"`
+}
+
+// SlackChannelConfigJSON - Slack channel configuration from agentConfig
+type SlackChannelConfigJSON struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Token   string `json:"token,omitempty"`
+	TokenSecretRef string `json:"tokenSecretRef,omitempty"`
+	AllowedChannels []string `json:"allowedChannels,omitempty"`
 }
 
 // GatewayInstanceConfigJSON - Gateway process specific config
@@ -301,6 +367,7 @@ func (c *ConfigConverter) ParseAgentConfig(raw []byte) (*AgentConfigJSON, error)
 }
 
 // convertGatewayInstanceConfig converts agentConfig.Gateway to OpenClaw GatewayConfig
+// For v2026.5.7: use bind (not host), auth object (not authMode)
 func (c *ConfigConverter) convertGatewayInstanceConfig(gateway *GatewayInstanceConfigJSON) *GatewayConfig {
 	cfg := &GatewayConfig{
 		Mode: "local",
@@ -310,10 +377,13 @@ func (c *ConfigConverter) convertGatewayInstanceConfig(gateway *GatewayInstanceC
 		cfg.Port = gateway.Port
 	}
 	if gateway.Bind != "" {
-		cfg.Host = gateway.Bind
+		cfg.Bind = gateway.Bind
 	}
 	if gateway.Auth != nil {
-		cfg.AuthMode = gateway.Auth.Mode
+		cfg.Auth = &GatewayAuth{
+			Mode:  gateway.Auth.Mode,
+			Token: gateway.Auth.Token,
+		}
 	}
 	if gateway.ControlUI != nil {
 		cfg.ControlUI = &ControlUIConfig{
@@ -328,30 +398,22 @@ func (c *ConfigConverter) convertGatewayInstanceConfig(gateway *GatewayInstanceC
 }
 
 // convertInternalAgentsConfig converts agentConfig.InternalAgents to OpenClaw AgentsConfig
+// For OpenClaw v2026.5.7: Only supported fields are model, skills, workspace at defaults level
 func (c *ConfigConverter) convertInternalAgentsConfig(internal *InternalAgentsConfigJSON) *AgentsConfig {
 	agents := &AgentsConfig{}
 
-	// Convert defaults
+	// Convert defaults - only use model, skills, workspace (v2026.5.7 schema)
 	if internal.Defaults != nil {
-		agents.Defaults = &AgentDefaultsConfig{
-			ThinkingDefault:  internal.Defaults.ThinkingDefault,
-			ReasoningDefault: internal.Defaults.ReasoningDefault,
-			FastModeDefault:  internal.Defaults.FastModeDefault,
-		}
+		agents.Defaults = &AgentDefaultsConfig{}
 		if internal.Defaults.Model != "" {
 			agents.Defaults.Model = &AgentModelConfig{
 				Primary: internal.Defaults.Model,
 			}
 		}
-		if internal.Defaults.Identity != nil {
-			agents.Defaults.Identity = &IdentityConfig{
-				Name:   internal.Defaults.Identity.Name,
-				Avatar: internal.Defaults.Identity.Avatar,
-			}
-		}
+		// Note: identity and thinkingDefault are NOT supported at defaults level in v2026.5.7
 	}
 
-	// Convert internal agent list
+	// Convert internal agent list - use v2026.5.7 schema fields
 	for _, def := range internal.List {
 		agent := &AgentConfig{
 			ID:   def.ID,
@@ -363,29 +425,7 @@ func (c *ConfigConverter) convertInternalAgentsConfig(internal *InternalAgentsCo
 			}
 		}
 		agent.Skills = def.Skills
-		if def.Identity != nil {
-			agent.Identity = &IdentityConfig{
-				Name:   def.Identity.Name,
-				Avatar: def.Identity.Avatar,
-			}
-		}
-		if def.Tools != nil {
-			agent.Tools = &AgentToolsConfig{
-				Allow: def.Tools.Allow,
-				Deny:  def.Tools.Deny,
-			}
-		}
-		if def.Subagents != nil {
-			agent.Subagents = &SubagentsConfigOpenClaw{
-				AllowAgents:    def.Subagents.AllowAgents,
-				RequireAgentID: def.Subagents.RequireAgentID,
-			}
-			if def.Subagents.Model != "" {
-				agent.Subagents.Model = &AgentModelConfig{
-					Primary: def.Subagents.Model,
-				}
-			}
-		}
+		// Note: identity is NOT a top-level field in agents.list[] for v2026.5.7
 		agents.List = append(agents.List, agent)
 	}
 
@@ -412,6 +452,53 @@ func (c *ConfigConverter) applyAgentOverrides(config *OpenClawConfig, overrides 
 	if len(overrides.ModelFallbacks) > 0 && config.Agents.Defaults != nil && config.Agents.Defaults.Model != nil {
 		config.Agents.Defaults.Model.Fallbacks = overrides.ModelFallbacks
 	}
+}
+
+// convertChannelsConfig converts agentConfig.Channels to OpenClaw ChannelsConfig
+func (c *ConfigConverter) convertChannelsConfig(channels *ChannelsInstanceConfigJSON) *ChannelsConfig {
+	if channels == nil {
+		return nil
+	}
+
+	cfg := &ChannelsConfig{}
+
+	// Convert Discord configuration (v2026.5.7 schema)
+	if channels.Discord != nil {
+		// Use AllowFrom if provided directly, otherwise use AllowedUsers
+		allowFrom := channels.Discord.AllowFrom
+		if len(allowFrom) == 0 && len(channels.Discord.AllowedUsers) > 0 {
+			allowFrom = channels.Discord.AllowedUsers
+		}
+		cfg.Discord = &DiscordConfig{
+			Enabled:   channels.Discord.Enabled,
+			Token:     channels.Discord.Token,
+			AllowFrom: allowFrom,
+			DmPolicy:  channels.Discord.DmPolicy,
+		}
+		// Set dmPolicy if allowFrom provided and dmPolicy not set
+		if len(allowFrom) > 0 && cfg.Discord.DmPolicy == "" {
+			cfg.Discord.DmPolicy = "allowlist"
+		}
+	}
+
+	// Convert Telegram configuration
+	if channels.Telegram != nil {
+		cfg.Telegram = &TelegramConfig{
+			Enabled:      channels.Telegram.Enabled,
+			Token:        channels.Telegram.Token,
+			AllowedUsers: channels.Telegram.AllowedUsers,
+		}
+	}
+
+	// Convert Slack configuration
+	if channels.Slack != nil {
+		cfg.Slack = &SlackConfig{
+			Enabled: channels.Slack.Enabled,
+			Token:   channels.Slack.Token,
+		}
+	}
+
+	return cfg
 }
 
 // filterSkills filters skills based on allow/deny lists
@@ -734,16 +821,17 @@ type AgentsConfig struct {
 	List     []*AgentConfig       `json:"list,omitempty"`
 }
 
-// AgentDefaultsConfig represents default agent configuration.
+// AgentDefaultsConfig represents default agent configuration for OpenClaw v2026.5.7.
+// Schema: model, skills, workspace (identity and thinking are NOT supported at defaults level)
 type AgentDefaultsConfig struct {
-	Model            *AgentModelConfig   `json:"model,omitempty"`
-	Identity         *IdentityConfig     `json:"identity,omitempty"`
-	ThinkingDefault  string              `json:"thinkingDefault,omitempty"`
-	ReasoningDefault string              `json:"reasoningDefault,omitempty"`
-	FastModeDefault  bool                `json:"fastModeDefault,omitempty"`
+	Model    *AgentModelConfig `json:"model,omitempty"`
+	Skills   []string          `json:"skills,omitempty"`
+	Workspace string            `json:"workspace,omitempty"`
 }
 
-// AgentConfig represents a single agent configuration.
+// AgentConfig represents a single agent configuration for OpenClaw v2026.5.7.
+// Schema: id (required), name, description, workspace, model, skills, thinking, agents, etc.
+// Note: identity is NOT a top-level field in agents.list[]
 type AgentConfig struct {
 	ID          string              `json:"id"`
 	Name        string              `json:"name,omitempty"`
@@ -751,9 +839,8 @@ type AgentConfig struct {
 	Workspace   string              `json:"workspace,omitempty"`
 	Model       *AgentModelConfig   `json:"model,omitempty"`
 	Skills      []string            `json:"skills,omitempty"`
-	Tools       *AgentToolsConfig   `json:"tools,omitempty"`
-	Identity    *IdentityConfig     `json:"identity,omitempty"`
-	Subagents   *SubagentsConfigOpenClaw `json:"subagents,omitempty"`
+	Thinking    string              `json:"thinking,omitempty"`
+	Agents      []string            `json:"agents,omitempty"`
 }
 
 // AgentModelConfig represents agent model configuration.
@@ -826,14 +913,21 @@ type MemoryConfig struct {
 	Persistence bool   `json:"persistence,omitempty"`
 }
 
-// GatewayConfig represents gateway configuration.
+// GatewayConfig represents gateway configuration for OpenClaw v2026.5.7.
+// Schema: mode, bind, port, auth (object with mode/token), controlUi, trustedProxies
 type GatewayConfig struct {
 	Mode          string           `json:"mode,omitempty"`
-	Host          string           `json:"host,omitempty"`
+	Bind          string           `json:"bind,omitempty"`
 	Port          int              `json:"port,omitempty"`
-	AuthMode      string           `json:"authMode,omitempty"`
+	Auth          *GatewayAuth     `json:"auth,omitempty"`
 	ControlUI     *ControlUIConfig `json:"controlUi,omitempty"`
 	TrustedProxies []string        `json:"trustedProxies,omitempty"`
+}
+
+// GatewayAuth represents gateway authentication for v2026.5.7.
+type GatewayAuth struct {
+	Mode  string `json:"mode,omitempty"`
+	Token string `json:"token,omitempty"`
 }
 
 // ControlUIConfig represents Control UI configuration.
@@ -858,14 +952,19 @@ type ChannelsConfig struct {
 
 // TelegramConfig represents Telegram channel config.
 type TelegramConfig struct {
-	Enabled bool   `json:"enabled,omitempty"`
-	Token   string `json:"token,omitempty"`
+	Enabled      bool     `json:"enabled,omitempty"`
+	Token        string   `json:"token,omitempty"`
+	AllowedUsers []string `json:"allowedUsers,omitempty"` // Telegram user IDs whitelist
 }
 
-// DiscordConfig represents Discord channel config.
+// DiscordConfig represents Discord channel config for OpenClaw v2026.5.7.
+// Schema: enabled, token, allowFrom (user whitelist), dmPolicy, guilds
 type DiscordConfig struct {
-	Enabled bool   `json:"enabled,omitempty"`
-	Token   string `json:"token,omitempty"`
+	Enabled    bool     `json:"enabled,omitempty"`
+	Token      string   `json:"token,omitempty"`
+	AllowFrom  []string `json:"allowFrom,omitempty"`      // User IDs whitelist (v2026.5.7)
+	DmPolicy   string   `json:"dmPolicy,omitempty"`       // "pairing" | "allowlist" | "open" | "disabled"
+	Guilds     map[string]interface{} `json:"guilds,omitempty"` // Guild-specific config (v2026.5.7)
 }
 
 // SlackConfig represents Slack channel config.

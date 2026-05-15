@@ -253,6 +253,7 @@ func (h *OpenClawHandler) StartFrameworkInstance(ctx context.Context, instanceID
 
 	// Prepare command
 	// Gateway command: openclaw gateway --allow-unconfigured --port <port>
+	// For OpenClaw v2026.5.7: Use OPENCLAW_CONFIG_PATH env instead of --config flag
 	args := []string{
 		"gateway",
 		"--allow-unconfigured",
@@ -260,15 +261,16 @@ func (h *OpenClawHandler) StartFrameworkInstance(ctx context.Context, instanceID
 		"--port", fmt.Sprintf("%d", port),
 		"--auth", "none",
 		"--force",
-		"--config", configPath,
 	}
 
 	cmd := exec.CommandContext(ctx, h.frameworkBin, args...)
 	cmd.Dir = h.workDir
 
-	// Set environment
+	// Set environment for OpenClaw v2026.5.7
+	// OPENCLAW_CONFIG_PATH: Path to openclaw.json config file
+	// OPENCLAW_STATE_DIR: Directory for state persistence
 	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("OPENCLAW_CONFIG_DIR=%s", h.configDir),
+		fmt.Sprintf("OPENCLAW_CONFIG_PATH=%s", configPath),
 		fmt.Sprintf("OPENCLAW_STATE_DIR=%s", h.workDir),
 	)
 

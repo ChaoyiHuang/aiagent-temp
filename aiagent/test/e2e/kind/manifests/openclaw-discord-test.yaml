@@ -1,0 +1,247 @@
+# Test Case: OpenClaw Discord Integration
+# Demonstrates how to configure OpenClaw to connect to Discord
+#
+# Prerequisites:
+# - Discord Bot Token (from Discord Developer Portal)
+# - Discord User IDs (whitelist of allowed users)
+# - DeepSeek API Key (or other LLM provider)
+#
+# Configuration Flow:
+# ┌─────────────────────────────────────────────────────────────────┐
+# │ Harness CRDs (shared platform capabilities)                     │
+# │  - deepseek-model: LLM provider configuration                   │
+# │  - discord-skills: Skills/tools for Discord bot                 │
+# │                                                                 │
+# │ Secret CRDs (sensitive data)                                    │
+# │  - discord-bot-token: Discord bot token                         │
+# │  - deepseek-api-key: DeepSeek API key                           │
+# │                                                                 │
+# │ AgentRuntime CRD                                                │
+# │  - References Harness CRDs                                      │
+# │  - processMode: isolated (each agent gets own Gateway)          │
+# │                                                                 │
+# │ AIAgent CRD                                                     │
+# │  - runtimeRef: bind to AgentRuntime                             │
+# │  - agentConfig:                                                 │
+# │      gateway: {port, bind, auth}                                │
+# │      channels:                                                  │
+# │        discord:                                                 │
+# │          enabled: true                                          │
+# │          tokenSecretRef: discord-bot-token                      │
+# │          allowedUsers: ["123456789012345678"]                   │
+# │      agents:                                                    │
+# │        defaults: {model, identity}                              │
+# │        list: [{id, name, skills}]                               │
+# └─────────────────────────────────────────────────────────────────┘
+
+---
+# Harness for DeepSeek Model (LLM provider)
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  namespace: aiagent-system
+  name: discord-deepseek-model
+spec:
+  type: model
+  model:
+    provider: deepseek
+    endpoint: https://api.deepseek.com/v1
+    authSecretRef: deepseek-api-key
+    defaultModel: deepseek-chat
+    models:
+    - name: deepseek-chat
+      allowed: true
+    - name: deepseek-coder
+      allowed: true
+
+---
+# Harness for Skills (Discord-specific tools)
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  namespace: aiagent-system
+  name: discord-skills
+spec:
+  type: skills
+  skills:
+    hubType: builtin
+    skills:
+    - name: chat
+      version: "1.0"
+      allowed: true
+    - name: search
+      version: "1.0"
+      allowed: true
+    - name: weather
+      version: "1.0"
+      allowed: true
+
+---
+# Harness for Memory (conversation persistence)
+apiVersion: agent.ai/v1
+kind: Harness
+metadata:
+  namespace: aiagent-system
+  name: discord-memory
+spec:
+  type: memory
+  memory:
+    type: inmemory
+    ttl: 7200  # 2 hours for Discord conversations
+
+---
+# AgentRuntime for Discord Bot
+apiVersion: agent.ai/v1
+kind: AgentRuntime
+metadata:
+  namespace: aiagent-system
+  name: discord-runtime
+spec:
+  # Each Discord bot instance runs in isolated Gateway mode
+  processMode: isolated
+
+  agentHandler:
+    image: aiagent/openclaw-handler:test
+    env:
+    - name: BASE_GATEWAY_PORT
+      value: "18800"
+    - name: WORK_DIR
+      value: "/shared/workdir"
+    - name: CONFIG_DIR
+      value: "/shared/config"
+
+  agentFramework:
+    image: aiagent/openclaw-framework:test
+    type: openclaw
+
+  # Harness references (shared capabilities)
+  harness:
+  - name: discord-deepseek-model
+    namespace: aiagent-system
+  - name: discord-skills
+    namespace: aiagent-system
+  - name: discord-memory
+    namespace: aiagent-system
+
+  replicas: 1
+
+---
+# AIAgent for Discord Bot
+# This is where Discord-specific configuration is set
+apiVersion: agent.ai/v1
+kind: AIAgent
+metadata:
+  namespace: aiagent-system
+  name: discord-bot-1
+  labels:
+    runtime: discord-runtime
+spec:
+  description: "Discord Bot powered by DeepSeek"
+  runtimeRef:
+    type: openclaw
+    name: discord-runtime
+
+  # agentConfig: OpenClaw-specific configuration
+  # Channels configuration enables Discord integration
+  agentConfig:
+    # Gateway settings
+    gateway:
+      port: 18800
+      bind: "loopback"
+      auth:
+        mode: "none"
+
+    # Channel integrations - THIS IS WHERE DISCORD IS CONFIGURED
+    channels:
+      discord:
+        enabled: true
+        # Reference to Secret containing Discord bot token
+        tokenSecretRef: discord-bot-token
+        # Discord user IDs whitelist (only these users can interact with bot)
+        # Replace with actual Discord user IDs from your server
+        allowedUsers:
+        - "123456789012345678"  # Example: User ID 1
+        - "987654321098765432"  # Example: User ID 2
+        # Optional: Restrict to specific Discord servers (guilds)
+        allowedGuilds:
+        - "111222333444555666"  # Example: Guild ID
+        # Optional: Restrict to specific channels within servers
+        allowedChannels:
+        - "222333444555666777"  # Example: Channel ID
+        # Optional: Command prefix for bot
+        commandPrefix: "!"
+
+    # Internal agents managed by this Gateway
+    agents:
+      defaults:
+        # Model from Harness (deepseek-chat)
+        thinkingDefault: "medium"
+        identity:
+          name: "AI Assistant"
+          avatar: "🤖"
+      list:
+      - id: "discord-assistant"
+        name: "Discord Assistant"
+        skills: ["chat", "search"]
+        identity:
+          name: "Bot Assistant"
+          avatar: "🤖"
+      - id: "weather-bot"
+        name: "Weather Bot"
+        skills: ["weather"]
+        identity:
+          name: "Weather Bot"
+          avatar: "🌤️"
+
+---
+# Secret: Discord Bot Token
+# Store your Discord bot token here
+# Get token from: Discord Developer Portal > Applications > Your App > Bot > Token
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: aiagent-system
+  name: discord-bot-token
+type: Opaque
+stringData:
+  # Replace with your actual Discord bot token
+  # Format: Usually a long string like "MTk4NjI..."
+  token: "YOUR_DISCORD_BOT_TOKEN_HERE"
+
+---
+# Secret: DeepSeek API Key
+# Store your DeepSeek API key here
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: aiagent-system
+  name: deepseek-api-key
+type: Opaque
+stringData:
+  # Replace with your actual DeepSeek API key
+  # Get from: https://platform.deepseek.com/api_keys
+  api-key: "YOUR_DEEPSEEK_API_KEY_HERE"
+
+---
+# Example: How to find Discord IDs
+#
+# Discord Bot Token:
+#   1. Go to https://discord.com/developers/applications
+#   2. Create new application or select existing
+#   3. Go to "Bot" section
+#   4. Click "Add Bot" if not already added
+#   5. Copy the token (keep it secret!)
+#   6. Enable required intents (Message Content, etc.)
+#
+# Discord User ID:
+#   1. Enable Developer Mode in Discord (User Settings > Advanced > Developer Mode)
+#   2. Right-click on a user > Copy User ID
+#   3. Paste into allowedUsers list
+#
+# Discord Guild (Server) ID:
+#   1. Right-click on server icon > Copy Server ID
+#   2. Paste into allowedGuilds list
+#
+# Discord Channel ID:
+#   1. Right-click on channel > Copy Channel ID
+#   2. Paste into allowedChannels list

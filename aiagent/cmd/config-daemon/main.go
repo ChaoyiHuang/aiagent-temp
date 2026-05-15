@@ -68,7 +68,7 @@ const (
 var aiAgentGVR = schema.GroupVersionResource{
 	Group:    "agent.ai",
 	Version:  "v1",
-	Resource: "aigents",
+	Resource: "aiagents",
 }
 
 // AgentMeta contains metadata about an agent for the handler.
@@ -504,8 +504,9 @@ func (d *ConfigDaemon) updateNamespaceIndex(namespace string) {
 		if agent.Namespace != namespace {
 			continue
 		}
-		// Only include agents in Running, Pending, or Scheduling phase
-		if agent.Phase != "Running" && agent.Phase != "Pending" && agent.Phase != "Scheduling" {
+		// Only include agents in Running, Pending, Scheduling, or Migrating phase
+		// Migrating agents should still be processed by handler during pod restarts
+		if agent.Phase != "Running" && agent.Phase != "Pending" && agent.Phase != "Scheduling" && agent.Phase != "Migrating" {
 			continue
 		}
 		entries = append(entries, AgentIndexEntry{

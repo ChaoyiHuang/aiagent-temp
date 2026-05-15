@@ -47,6 +47,7 @@ import (
 	"syscall"
 	"time"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"gopkg.in/yaml.v3"
 
 	"aiagent/api/v1"
@@ -237,6 +238,14 @@ func runHandler(ctx context.Context, h *openclaw.OpenClawHandler, harnessDir str
 
 	// 3. Build HarnessConfig from HarnessManager
 	harnessCfg := buildHarnessConfig(harnessMgr)
+	if *debug {
+		if harnessCfg.Model != nil {
+			log.Printf("DEBUG: Model harness loaded: Provider=%s, Endpoint=%s, DefaultModel=%s",
+				harnessCfg.Model.Provider, harnessCfg.Model.Endpoint, harnessCfg.Model.DefaultModel)
+		} else {
+			log.Printf("DEBUG: Model harness is nil")
+		}
+	}
 
 	// 4. Prepare config directory
 	configDir = filepath.Join(workDir, "openclaw-config")
@@ -412,12 +421,38 @@ func loadModelHarnessConfig(harnessPath string) (*v1.ModelHarnessSpec, error) {
 		return nil, fmt.Errorf("failed to read model.yaml: %w", err)
 	}
 
-	var spec v1.ModelHarnessSpec
-	if err := yaml.Unmarshal(data, &spec); err != nil {
+	// Convert YAML to JSON first to use JSON tags correctly
+	// YAML unmarshaling uses struct field names, not JSON tags
+	// So we need to convert YAML -> map -> JSON -> struct
+	var yamlMap map[string]interface{}
+	if err := yaml.Unmarshal(data, &yamlMap); err != nil {
 		return nil, fmt.Errorf("failed to parse model.yaml: %w", err)
 	}
 
+	jsonData, err := json.Marshal(yamlMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert YAML to JSON: %w", err)
+	}
+
+	var spec v1.ModelHarnessSpec
+	if err := json.Unmarshal(jsonData, &spec); err != nil {
+		return nil, fmt.Errorf("failed to parse model config: %w", err)
+	}
+
 	return &spec, nil
+}
+
+// yamlToJSON converts YAML data to JSON for proper struct unmarshaling using JSON tags.
+func yamlToJSON(data []byte, target interface{}) error {
+	var yamlMap map[string]interface{}
+	if err := yaml.Unmarshal(data, &yamlMap); err != nil {
+		return err
+	}
+	jsonData, err := json.Marshal(yamlMap)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(jsonData, target)
 }
 
 func loadMCPHarnessConfig(harnessPath string) (*v1.MCPHarnessSpec, error) {
@@ -428,7 +463,7 @@ func loadMCPHarnessConfig(harnessPath string) (*v1.MCPHarnessSpec, error) {
 	}
 
 	var spec v1.MCPHarnessSpec
-	if err := yaml.Unmarshal(data, &spec); err != nil {
+	if err := yamlToJSON(data, &spec); err != nil {
 		return nil, fmt.Errorf("failed to parse mcp.yaml: %w", err)
 	}
 
@@ -443,7 +478,7 @@ func loadMemoryHarnessConfig(harnessPath string) (*v1.MemoryHarnessSpec, error) 
 	}
 
 	var spec v1.MemoryHarnessSpec
-	if err := yaml.Unmarshal(data, &spec); err != nil {
+	if err := yamlToJSON(data, &spec); err != nil {
 		return nil, fmt.Errorf("failed to parse memory.yaml: %w", err)
 	}
 
@@ -458,7 +493,7 @@ func loadSandboxHarnessConfig(harnessPath string) (*v1.SandboxHarnessSpec, error
 	}
 
 	var spec v1.SandboxHarnessSpec
-	if err := yaml.Unmarshal(data, &spec); err != nil {
+	if err := yamlToJSON(data, &spec); err != nil {
 		return nil, fmt.Errorf("failed to parse sandbox.yaml: %w", err)
 	}
 
@@ -473,7 +508,7 @@ func loadSkillsHarnessConfig(harnessPath string) (*v1.SkillsHarnessSpec, error) 
 	}
 
 	var spec v1.SkillsHarnessSpec
-	if err := yaml.Unmarshal(data, &spec); err != nil {
+	if err := yamlToJSON(data, &spec); err != nil {
 		return nil, fmt.Errorf("failed to parse skills.yaml: %w", err)
 	}
 
@@ -536,7 +571,7 @@ func loadGatewaysFromIndex(ctx context.Context, h *openclaw.OpenClawHandler, ind
 			continue // Already loaded
 		}
 
-		if entry.Phase != "Running" && entry.Phase != "Pending" {
+		if entry.Phase != "Running" && entry.Phase != "Pending" && entry.Phase != "Migrating" && entry.Phase != "Scheduling" {
 			continue
 		}
 
@@ -645,15 +680,32 @@ func loadAgentFromHostPath(agentName string, agentConfigDir string) (*v1.AIAgent
 	return agentSpec, agentConfig, nil
 }
 
-// generateGatewayConfig generates Gateway config using agentConfig or agentSpec.
+// generateGatewayConfig generates Gateway config by merging agentConfig with harnessCfg.
+// agentConfig contains agent-specific settings (channels, gateway, internal agents)
+// harnessCfg contains shared platform capabilities (models, skills, memory)
 func generateGatewayConfig(h *openclaw.OpenClawHandler, agentSpec *v1.AIAgentSpec, agentConfig map[string]interface{}, harnessCfg *handler.HarnessConfig) ([]byte, error) {
-	// If agentConfig is provided, use it directly
+	// Build AIAgentSpec with agentConfig.Raw from the loaded config
+	spec := agentSpec
 	if agentConfig != nil {
-		return json.MarshalIndent(agentConfig, "", "  ")
+		// Marshal agentConfig to Raw JSON so converter can process it
+		rawConfig, err := json.Marshal(agentConfig)
+		if err != nil {
+			log.Printf("Error marshaling agentConfig: %v", err)
+		} else {
+			spec = &v1.AIAgentSpec{
+				Description:   agentSpec.Description,
+				RuntimeRef:    agentSpec.RuntimeRef,
+				AgentConfig:   &apiextensionsv1.JSON{Raw: rawConfig},
+				HarnessOverride: agentSpec.HarnessOverride,
+			}
+		}
 	}
 
-	// Otherwise, generate from agentSpec + harnessCfg
-	return h.GenerateFrameworkConfig(agentSpec, harnessCfg)
+	// Generate config by merging agentSpec with harnessCfg
+	// This calls the converter which properly merges:
+	// - agentConfig (agent-specific: channels, gateway, internal agents)
+	// - harnessCfg (shared: models, skills, memory)
+	return h.GenerateFrameworkConfig(spec, harnessCfg)
 }
 
 // checkGatewayHealth checks health of Gateway processes.

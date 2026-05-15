@@ -16,10 +16,10 @@ metadata:
 rules:
 # AIAgent permissions (read-only for watching)
 - apiGroups: ["agent.ai"]
-  resources: ["aigents"]
+  resources: ["aiagents"]
   verbs: ["get", "list", "watch"]
 - apiGroups: ["agent.ai"]
-  resources: ["aigents/status"]
+  resources: ["aiagents/status"]
   verbs: ["get", "list", "watch"]
 # Pod permissions (for discovering runtime pods)
 - apiGroups: [""]
