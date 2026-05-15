@@ -230,15 +230,19 @@ func runHandler(ctx context.Context, h *adk.ADKHandler, harnessDir string, agent
 	// Track agent index state to reduce log noise
 	lastIndexSize := -1
 	notFoundCount := 0
-	notFoundLogInterval := 12 // Log every 12 intervals (~1 minute at 5s interval)
+	notFoundLogInterval := 12 // Log every 12 intervals (~1 minute at 30s interval)
 
-	// Poll interval
-	pollInterval := 5 * time.Second
+	// Track process health state for change detection
+	lastRunning := false
+	lastAgentCount := 0
+
+	// Poll interval (reduced to 30s to minimize log spam)
+	pollInterval := 30 * time.Second
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	// Initial load
-	loadAgentsFromIndex(ctx, h, agentIndexPath, agentConfigDir, workDir, configDir, harnessCfg, loadedAgents, processMode, &lastIndexSize, &notFoundCount, notFoundLogInterval)
+	loadAgentsFromIndex(ctx, h, agentIndexPath, agentConfigDir, workDir, configDir, harnessCfg, loadedAgents, processMode, &lastIndexSize, &notFoundCount, notFoundLogInterval, true)
 
 	for {
 		select {
@@ -247,11 +251,11 @@ func runHandler(ctx context.Context, h *adk.ADKHandler, harnessDir string, agent
 			return cleanup(ctx, h, loadedAgents)
 
 		case <-ticker.C:
-			// Poll for changes
-			loadAgentsFromIndex(ctx, h, agentIndexPath, agentConfigDir, workDir, configDir, harnessCfg, loadedAgents, processMode, &lastIndexSize, &notFoundCount, notFoundLogInterval)
+			// Poll for changes (silent mode)
+			loadAgentsFromIndex(ctx, h, agentIndexPath, agentConfigDir, workDir, configDir, harnessCfg, loadedAgents, processMode, &lastIndexSize, &notFoundCount, notFoundLogInterval, false)
 
-			// Check process health
-			checkProcessHealth(ctx, h, processMode)
+			// Check process health (only log on changes)
+			lastRunning, lastAgentCount = checkProcessHealthWithChangeDetection(ctx, h, processMode, lastRunning, lastAgentCount)
 		}
 	}
 }
@@ -495,14 +499,15 @@ func buildHarnessConfig(mgr *harness.HarnessManager) *handler.HarnessConfig {
 }
 
 // loadAgentsFromIndex loads agents from agent-index.yaml (written by Config Daemon).
-func loadAgentsFromIndex(ctx context.Context, h *adk.ADKHandler, indexPath string, agentConfigDir string, workDir string, configDir string, harnessCfg *handler.HarnessConfig, loadedAgents map[string]bool, processMode handler.ProcessModeType, lastIndexSize *int, notFoundCount *int, notFoundLogInterval int) {
+// verbose: if true, always log status; if false, only log on changes
+func loadAgentsFromIndex(ctx context.Context, h *adk.ADKHandler, indexPath string, agentConfigDir string, workDir string, configDir string, harnessCfg *handler.HarnessConfig, loadedAgents map[string]bool, processMode handler.ProcessModeType, lastIndexSize *int, notFoundCount *int, notFoundLogInterval int, verbose bool) {
 	// Read agent index (written by Config Daemon)
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			*notFoundCount++
 			// Only log at interval to reduce noise
-			if *notFoundCount == 1 || *notFoundCount%notFoundLogInterval == 0 {
+			if verbose || *notFoundCount == 1 || *notFoundCount%notFoundLogInterval == 0 {
 				log.Printf("Agent index not found at %s, waiting for Config Daemon (check #%d)", indexPath, *notFoundCount)
 			}
 			return
@@ -520,10 +525,22 @@ func loadAgentsFromIndex(ctx context.Context, h *adk.ADKHandler, indexPath strin
 		return
 	}
 
-	// Only log when index size changes
+	// Count new agents to load
+	newAgents := 0
+	for _, entry := range index.Agents {
+		if loadedAgents[entry.Name] {
+			continue // Already loaded
+		}
+		if entry.Phase != "Running" && entry.Phase != "Pending" && entry.Phase != "Scheduling" {
+			continue
+		}
+		newAgents++
+	}
+
+	// Only log if verbose or there are changes (new agents)
 	currentSize := len(index.Agents)
-	if currentSize != *lastIndexSize {
-		log.Printf("AgentIndex contains %d agents (changed from %d)", currentSize, *lastIndexSize)
+	if verbose || currentSize != *lastIndexSize || newAgents > 0 || *debug {
+		log.Printf("AgentIndex: %d agents, %d loaded, %d new", currentSize, len(loadedAgents), newAgents)
 		*lastIndexSize = currentSize
 	}
 
@@ -681,20 +698,28 @@ func generateFrameworkConfig(h *adk.ADKHandler, agentSpec *v1.AIAgentSpec, agent
 	return h.GenerateFrameworkConfig(agentSpec, harnessCfg)
 }
 
-// checkProcessHealth checks health of Framework processes.
-func checkProcessHealth(ctx context.Context, h *adk.ADKHandler, processMode handler.ProcessModeType) {
+// checkProcessHealthWithChangeDetection checks health and only logs on state changes.
+// Returns the current state for comparison in next iteration.
+func checkProcessHealthWithChangeDetection(ctx context.Context, h *adk.ADKHandler, processMode handler.ProcessModeType, lastRunning bool, lastAgentCount int) (bool, int) {
 	status, err := h.GetFrameworkStatus(ctx)
 	if err != nil {
-		log.Printf("Error getting Framework status: %v", err)
-		return
+		// Only log error if it's new (previous state was healthy)
+		if lastRunning {
+			log.Printf("Error getting Framework status: %v", err)
+		}
+		return false, 0
 	}
 
-	if !status.Running {
-		log.Printf("Warning: Framework process not running")
-		return
+	// Only log if state changed
+	if status.Running != lastRunning || status.AgentCount != lastAgentCount || !status.Running || *debug {
+		if !status.Running {
+			log.Printf("Warning: Framework process not running")
+		} else {
+			log.Printf("Framework status: running=%v, agents=%d, health=%s", status.Running, status.AgentCount, status.Health)
+		}
 	}
 
-	log.Printf("Framework status: running=%v, agents=%d, health=%s", status.Running, status.AgentCount, status.Health)
+	return status.Running, status.AgentCount
 }
 
 // cleanup stops all agents and Framework processes.

@@ -262,13 +262,18 @@ func runHandler(ctx context.Context, h *openclaw.OpenClawHandler, harnessDir str
 	portAssignments := make(map[string]int)
 	nextPort := basePort
 
-	// Poll interval
-	pollInterval := 5 * time.Second
+	// Track last state for change detection
+	lastAgentCount := 0
+	lastGatewayRunning := false
+	lastGatewayInstances := 0
+
+	// Poll interval (reduced to 30s to minimize log spam)
+	pollInterval := 30 * time.Second
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	// Initial load
-	loadGatewaysFromIndex(ctx, h, agentIndexPath, agentConfigDir, workDir, configDir, harnessCfg, loadedGateways, portAssignments, &nextPort)
+	loadGatewaysFromIndex(ctx, h, agentIndexPath, agentConfigDir, workDir, configDir, harnessCfg, loadedGateways, portAssignments, &nextPort, true)
 
 	for {
 		select {
@@ -277,11 +282,11 @@ func runHandler(ctx context.Context, h *openclaw.OpenClawHandler, harnessDir str
 			return cleanup(ctx, h, loadedGateways)
 
 		case <-ticker.C:
-			// Poll for changes
-			loadGatewaysFromIndex(ctx, h, agentIndexPath, agentConfigDir, workDir, configDir, harnessCfg, loadedGateways, portAssignments, &nextPort)
+			// Poll for changes (silent mode - only log on changes)
+			loadGatewaysFromIndex(ctx, h, agentIndexPath, agentConfigDir, workDir, configDir, harnessCfg, loadedGateways, portAssignments, &nextPort, false)
 
-			// Check Gateway health
-			checkGatewayHealth(ctx, h)
+			// Check Gateway health (only log on changes)
+			lastAgentCount, lastGatewayRunning, lastGatewayInstances = checkGatewayHealthWithChangeDetection(ctx, h, lastAgentCount, lastGatewayRunning, lastGatewayInstances)
 		}
 	}
 }
@@ -543,12 +548,13 @@ func buildHarnessConfig(mgr *harness.HarnessManager) *handler.HarnessConfig {
 }
 
 // loadGatewaysFromIndex loads gateways from agent-index.yaml (written by Config Daemon).
-func loadGatewaysFromIndex(ctx context.Context, h *openclaw.OpenClawHandler, indexPath string, agentConfigDir string, workDir string, configDir string, harnessCfg *handler.HarnessConfig, loadedGateways map[string]bool, portAssignments map[string]int, nextPort *int) {
+// verbose: if true, always log status; if false, only log on changes (new agents)
+func loadGatewaysFromIndex(ctx context.Context, h *openclaw.OpenClawHandler, indexPath string, agentConfigDir string, workDir string, configDir string, harnessCfg *handler.HarnessConfig, loadedGateways map[string]bool, portAssignments map[string]int, nextPort *int, verbose bool) {
 	// Read agent index
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if *debug {
+			if verbose || *debug {
 				log.Printf("Agent index not found at %s, waiting for Config Daemon", indexPath)
 			}
 			return
@@ -563,7 +569,22 @@ func loadGatewaysFromIndex(ctx context.Context, h *openclaw.OpenClawHandler, ind
 		return
 	}
 
-	log.Printf("AgentIndex contains %d agents", len(index.Agents))
+	// Count new agents to load
+	newAgents := 0
+	for _, entry := range index.Agents {
+		if loadedGateways[entry.Name] {
+			continue // Already loaded
+		}
+		if entry.Phase != "Running" && entry.Phase != "Pending" && entry.Phase != "Migrating" && entry.Phase != "Scheduling" {
+			continue
+		}
+		newAgents++
+	}
+
+	// Only log if verbose or there are new agents
+	if verbose || newAgents > 0 || *debug {
+		log.Printf("AgentIndex: %d agents, %d already loaded, %d new", len(index.Agents), len(loadedGateways), newAgents)
+	}
 
 	// Process each agent (each becomes a Gateway instance)
 	for _, entry := range index.Agents {
@@ -708,15 +729,24 @@ func generateGatewayConfig(h *openclaw.OpenClawHandler, agentSpec *v1.AIAgentSpe
 	return h.GenerateFrameworkConfig(spec, harnessCfg)
 }
 
-// checkGatewayHealth checks health of Gateway processes.
-func checkGatewayHealth(ctx context.Context, h *openclaw.OpenClawHandler) {
+// checkGatewayHealthWithChangeDetection checks health and only logs on state changes.
+// Returns the current state for comparison in next iteration.
+func checkGatewayHealthWithChangeDetection(ctx context.Context, h *openclaw.OpenClawHandler, lastAgentCount int, lastRunning bool, lastInstances int) (int, bool, int) {
 	status, err := h.GetFrameworkStatus(ctx)
 	if err != nil {
-		log.Printf("Error getting Gateway status: %v", err)
-		return
+		// Only log error if it's new (previous state was healthy)
+		if lastRunning {
+			log.Printf("Error getting Gateway status: %v", err)
+		}
+		return lastAgentCount, false, 0
 	}
 
-	log.Printf("Gateway status: running=%v, instances=%d, health=%s", status.Running, status.InstanceCount, status.Health)
+	// Only log if state changed
+	if status.Running != lastRunning || status.InstanceCount != lastInstances || *debug {
+		log.Printf("Gateway status: running=%v, instances=%d, health=%s", status.Running, status.InstanceCount, status.Health)
+	}
+
+	return lastAgentCount, status.Running, status.InstanceCount
 }
 
 // cleanup stops all Gateway processes.

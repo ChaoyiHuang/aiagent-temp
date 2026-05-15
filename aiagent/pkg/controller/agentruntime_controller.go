@@ -439,8 +439,9 @@ func (r *AgentRuntimeReconciler) createOrUpdatePod(ctx context.Context, runtime 
 // │  │   /etc/harness/<name> -> Harness ConfigMaps                ││
 // │  │   /shared/workdir -> EmptyDir (agent workspace)            ││
 // │  │   /shared/config -> EmptyDir (runtime configs)             ││
-// │  │   /etc/agent-config -> hostPath (from Config Daemon)       ││
-// │  │   /etc/agent-config/<agent-name>/agent-config.json     ││
+// │  │   /etc/agent-config -> hostPath (Config Daemon per-runtime)││
+// │  │       /etc/agent-config/agent-index.yaml (ONLY this runtime's agents) ││
+// │  │       /etc/agent-config/<agent-name>/agent-config.json     ││
 // │  └────────────────────────────────────────────────────────────┘│
 // │                                                                 │
 // │  Framework Container (dummy - provides image content only)     │
@@ -454,9 +455,9 @@ func (r *AgentRuntimeReconciler) createOrUpdatePod(ctx context.Context, runtime 
 // │  Config Daemon (DaemonSet on same node)                        │
 // │  ┌────────────────────────────────────────────────────────────┐│
 // │  │ - Watches AIAgent CRDs via Informer                        ││
-// │  │ - Writes AgentConfig to hostPath                       ││
-// │  │ - /var/lib/aiagent/configs/<namespace>/<name>/             ││
-// │  │ - Creates agent-config.json + agent-meta.yaml          ││
+// │  │ - Writes AgentConfig to hostPath (PER RUNTIME)             ││
+// │  │ - /var/lib/aiagent/configs/<ns>/<runtime>/agent-index.yaml ││
+// │  │ - Creates agent-config.json + agent-meta.yaml              ││
 // │  └────────────────────────────────────────────────────────────┘│
 // │                                                                 │
 // │  ShareProcessNamespace: true (Handler can see/ctrl Framework) │
@@ -488,13 +489,15 @@ func (r *AgentRuntimeReconciler) buildPodSpec(runtime *v1.AgentRuntime) corev1.P
 	// hostPath volume for agent configs (written by Config Daemon)
 	// Config Daemon watches AIAgent CRDs and syncs AgentConfig to this path
 	// Handler reads configs directly without K8s API calls
-	// Path structure: /var/lib/aiagent/configs/<namespace>/<agent-name>/agent-config.json
+	// IMPORTANT: Mount is PER RUNTIME (not per namespace)
+	// Path structure: /var/lib/aiagent/configs/<namespace>/<runtime-name>/agent-index.yaml
+	// This ensures Handler only sees agents belonging to its specific AgentRuntime
 	hostPathType := corev1.HostPathDirectoryOrCreate
 	agentConfigHostPath := corev1.Volume{
 		Name: "agent-configs",
 		VolumeSource: corev1.VolumeSource{
 			HostPath: &corev1.HostPathVolumeSource{
-				Path: AgentConfigHostPath + "/" + runtime.Namespace,
+				Path: AgentConfigHostPath + "/" + runtime.Namespace + "/" + runtime.Name,
 				Type: &hostPathType,
 			},
 		},
