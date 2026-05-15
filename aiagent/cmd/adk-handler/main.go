@@ -537,9 +537,9 @@ func loadAgentsFromIndex(ctx context.Context, h *adk.ADKHandler, indexPath strin
 		newAgents++
 	}
 
-	// Only log if verbose or there are changes (new agents)
+	// Only log if verbose or there are new agents (silent otherwise)
 	currentSize := len(index.Agents)
-	if verbose || currentSize != *lastIndexSize || newAgents > 0 || *debug {
+	if verbose || newAgents > 0 {
 		log.Printf("AgentIndex: %d agents, %d loaded, %d new", currentSize, len(loadedAgents), newAgents)
 		*lastIndexSize = currentSize
 	}
@@ -710,8 +710,8 @@ func checkProcessHealthWithChangeDetection(ctx context.Context, h *adk.ADKHandle
 		return false, 0
 	}
 
-	// Only log if state changed
-	if status.Running != lastRunning || status.AgentCount != lastAgentCount || !status.Running || *debug {
+	// Only log if state changed (running status or agent count)
+	if status.Running != lastRunning || status.AgentCount != lastAgentCount {
 		if !status.Running {
 			log.Printf("Warning: Framework process not running")
 		} else {

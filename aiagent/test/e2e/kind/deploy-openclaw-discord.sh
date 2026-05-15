@@ -327,7 +327,7 @@ generate_config() {
     TEMP_DIR="/tmp/discord-deploy-$(date +%s)"
     mkdir -p "$TEMP_DIR"
 
-    # Generate Secrets
+    # Generate Secrets (values from environment variables)
     cat > "${TEMP_DIR}/secrets.yaml" <<EOF
 ---
 apiVersion: v1
@@ -368,8 +368,10 @@ spec:
     models:
     - name: deepseek-chat
       allowed: true
+      contextWindow: 164000
     - name: deepseek-coder
       allowed: true
+      contextWindow: 164000
 
 ---
 apiVersion: agent.ai/v1
@@ -434,33 +436,13 @@ spec:
   replicas: 1
 EOF
 
-    # Build allowedUsers section
-    if [ -n "$DISCORD_USER_IDS" ]; then
-        USERS_YAML="        allowedUsers:"
-        for id in $(echo "$DISCORD_USER_IDS" | tr ',' ' '); do
-            USERS_YAML="${USERS_YAML}
-        - \"${id}\""
-        done
-    else
-        USERS_YAML=""
-    fi
+    # Generate AIAgent with Discord config using tokenSecretRef (standard K8s Secret approach)
+    # OpenClaw v2026.5.7 config schema:
+    # - models.mergeModels: true -> Handler adds models.mode: "merge" to OpenClaw config
+    # - channels.discord: enabled, tokenSecretRef (Config Daemon resolves to actual token)
+    # - agents.list[]: id, name, skills
+    # Note: Models configuration comes from Harness CRD (discord-deepseek-model)
 
-    # Build allowedGuilds section
-    if [ -n "$DISCORD_GUILD_ID" ]; then
-        GUILD_YAML="        allowedGuilds:
-        - \"${DISCORD_GUILD_ID}\""
-    elif [ -n "$DISCORD_GUILD_ID_INPUT" ]; then
-        GUILD_YAML="        allowedGuilds:
-        - \"${DISCORD_GUILD_ID_INPUT}\""
-    else
-        GUILD_YAML=""
-    fi
-
-    # Generate AIAgent with Discord config - using actual token (not tokenSecretRef)
-    # OpenClaw v2026.5.7 config schema (handler writes agentConfig directly):
-    # - channels.discord: enabled, token, allowFrom (user IDs), dmPolicy, guilds
-    # - agents.list[]: id, name, skills (NO identity at top level)
-    # Note: allowedUsers -> allowFrom, commandPrefix is NOT a valid field
     cat > "${TEMP_DIR}/agent.yaml" <<EOF
 ---
 apiVersion: agent.ai/v1
@@ -481,13 +463,14 @@ spec:
       bind: "loopback"
       auth:
         mode: "none"
+    models:
+      mergeModels: true
     channels:
       discord:
         enabled: true
-        token: "${DISCORD_TOKEN}"
-        allowFrom:
-        - "${DISCORD_USER_IDS}"
-        dmPolicy: "allowlist"
+        tokenSecretRef: discord-bot-token
+        dmPolicy: "all"
+        mentionRequired: false
     agents:
       list:
       - id: "discord-assistant"

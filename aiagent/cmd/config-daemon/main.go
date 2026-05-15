@@ -451,6 +451,7 @@ func (d *ConfigDaemon) compareJSON(a, b *apiextensionsv1.JSON) bool {
 // syncAgentConfig writes agent config files to hostPath.
 // Directory structure: /var/lib/aiagent/configs/<namespace>/<runtime-name>/<agent-name>/agent-config.json
 // This ensures Handler mounting runtime-specific directory can find agent configs.
+// IMPORTANT: Resolves tokenSecretRef to actual token values from Secrets.
 func (d *ConfigDaemon) syncAgentConfig(agent *AgentInfo) {
 	// Skip agents without runtime binding
 	if agent.RuntimeName == "" {
@@ -469,15 +470,19 @@ func (d *ConfigDaemon) syncAgentConfig(agent *AgentInfo) {
 	}
 
 	// Write agent-config.json (from spec.agentConfig)
+	// Resolve any tokenSecretRef to actual token values
 	if agent.AgentConfig != nil && len(agent.AgentConfig.Raw) > 0 {
 		configPath := filepath.Join(agentDir, AgentConfigFile)
-		// Validate JSON and write
+		// Validate JSON and process secret references
 		var jsonData interface{}
 		if err := json.Unmarshal(agent.AgentConfig.Raw, &jsonData); err != nil {
 			log.Printf("Error parsing agentConfig JSON for %s: %v", d.agentKey(agent), err)
 			// Write raw data anyway for debugging
 			os.WriteFile(configPath, agent.AgentConfig.Raw, 0644)
 		} else {
+			// Resolve channel secret references (tokenSecretRef -> actual token)
+			jsonData = d.resolveChannelSecrets(jsonData, agent.Namespace)
+
 			// Pretty-print JSON
 			prettyJSON, _ := json.MarshalIndent(jsonData, "", "  ")
 			if err := os.WriteFile(configPath, prettyJSON, 0644); err != nil {
@@ -657,6 +662,65 @@ func (d *ConfigDaemon) updateAllRuntimeIndexesInNamespace(namespace string) {
 	} else if *debug {
 		log.Printf("Updated full namespace index at %s (%d agents)", allIndexPath, len(allEntries))
 	}
+}
+
+// resolveChannelSecrets resolves tokenSecretRef fields to actual token values from Secrets.
+// This is a framework-agnostic approach - Config Daemon resolves all secret references
+// regardless of which channel/framework is being used.
+// Supported patterns:
+// - channels.discord.tokenSecretRef -> read Secret, replace with actual token
+// - channels.telegram.tokenSecretRef -> read Secret, replace with actual token
+// - channels.slack.tokenSecretRef -> read Secret, replace with actual token
+func (d *ConfigDaemon) resolveChannelSecrets(data interface{}, namespace string) interface{} {
+	// Convert to map for manipulation
+	configMap, ok := data.(map[string]interface{})
+	if !ok {
+		return data // Not a map, return unchanged
+	}
+
+	// Check for channels section
+	channels, ok := configMap["channels"].(map[string]interface{})
+	if !ok {
+		return data // No channels section, return unchanged
+	}
+
+	// Process each channel type
+	for channelType, channelConfig := range channels {
+		channelMap, ok := channelConfig.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Check for tokenSecretRef
+		tokenSecretRef, ok := channelMap["tokenSecretRef"].(string)
+		if !ok || tokenSecretRef == "" {
+			continue // No tokenSecretRef, skip
+		}
+
+		// Read Secret to get actual token
+		secret, err := d.k8sClient.CoreV1().Secrets(namespace).Get(context.TODO(), tokenSecretRef, metav1.GetOptions{})
+		if err != nil {
+			log.Printf("Error reading secret %s for channel %s: %v", tokenSecretRef, channelType, err)
+			continue
+		}
+
+		// Get token value (key is "token" by convention)
+		tokenValue, ok := secret.Data["token"]
+		if !ok {
+			log.Printf("Secret %s does not have 'token' key", tokenSecretRef)
+			continue
+		}
+
+		// Replace tokenSecretRef with actual token value
+		channelMap["token"] = string(tokenValue)
+		delete(channelMap, "tokenSecretRef")
+
+		if *debug {
+			log.Printf("Resolved tokenSecretRef %s to actual token for channel %s", tokenSecretRef, channelType)
+		}
+	}
+
+	return configMap
 }
 
 // GetAgentTracker returns the current agent tracker state.

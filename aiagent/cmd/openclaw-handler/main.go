@@ -554,7 +554,7 @@ func loadGatewaysFromIndex(ctx context.Context, h *openclaw.OpenClawHandler, ind
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if verbose || *debug {
+			if verbose {
 				log.Printf("Agent index not found at %s, waiting for Config Daemon", indexPath)
 			}
 			return
@@ -581,9 +581,9 @@ func loadGatewaysFromIndex(ctx context.Context, h *openclaw.OpenClawHandler, ind
 		newAgents++
 	}
 
-	// Only log if verbose or there are new agents
-	if verbose || newAgents > 0 || *debug {
-		log.Printf("AgentIndex: %d agents, %d already loaded, %d new", len(index.Agents), len(loadedGateways), newAgents)
+	// Only log if verbose or there are new agents (silent otherwise)
+	if verbose || newAgents > 0 {
+		log.Printf("AgentIndex: %d agents, %d loaded, %d new", len(index.Agents), len(loadedGateways), newAgents)
 	}
 
 	// Process each agent (each becomes a Gateway instance)
@@ -741,8 +741,8 @@ func checkGatewayHealthWithChangeDetection(ctx context.Context, h *openclaw.Open
 		return lastAgentCount, false, 0
 	}
 
-	// Only log if state changed
-	if status.Running != lastRunning || status.InstanceCount != lastInstances || *debug {
+	// Only log if state changed (running status or instance count)
+	if status.Running != lastRunning || status.InstanceCount != lastInstances {
 		log.Printf("Gateway status: running=%v, instances=%d, health=%s", status.Running, status.InstanceCount, status.Health)
 	}
 

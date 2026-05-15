@@ -37,11 +37,13 @@ func (c *ConfigConverter) ConvertToOpenClawConfig(spec *v1.AIAgentSpec, harnessC
 	}
 
 	// 1. Parse agentConfig JSON (agent-specific configuration)
+	var agentConfig *AgentConfigJSON
 	if spec.AgentConfig != nil && spec.AgentConfig.Raw != nil {
-		agentConfig, err := c.parseAgentConfigJSON(spec.AgentConfig.Raw)
+		parsedConfig, err := c.parseAgentConfigJSON(spec.AgentConfig.Raw)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse agentConfig: %w", err)
 		}
+		agentConfig = parsedConfig
 
 		// Apply agentConfig to OpenClaw config
 		if agentConfig.Gateway != nil {
@@ -63,7 +65,8 @@ func (c *ConfigConverter) ConvertToOpenClawConfig(spec *v1.AIAgentSpec, harnessC
 	// 2. Apply Harness configuration (shared platform capabilities)
 	if harnessCfg != nil {
 		config.Agents.Defaults = c.convertAgentDefaultsFromHarness(harnessCfg)
-		config.Models = c.convertModelsConfig(harnessCfg)
+		// Pass agentConfig for merge mode configuration
+		config.Models = c.convertModelsConfig(harnessCfg, agentConfig)
 		config.Skills = c.convertSkillsConfig(harnessCfg)
 		// Memory config not supported in OpenClaw v2026.5.7 config schema
 		// OpenClaw uses internal session management
@@ -137,9 +140,11 @@ func (c *ConfigConverter) ConvertAgentSpec(spec *v1.AIAgentSpec, harnessCfg *han
 }
 
 // ConvertHarnessConfig generates harness-specific config sections.
+// Note: This method doesn't have agentConfig context, so models.mode won't be set.
+// Use ConvertToOpenClawConfig for full config generation with agentConfig support.
 func (c *ConfigConverter) ConvertHarnessConfig(harnessCfg *handler.HarnessConfig) ([]byte, error) {
 	harnessSection := &HarnessSection{
-		Model:   c.convertModelsConfig(harnessCfg),
+		Model:   c.convertModelsConfig(harnessCfg, nil), // nil agentConfig means no merge mode
 		Skills:  c.convertSkillsConfig(harnessCfg),
 		Memory:  c.convertMemoryConfig(harnessCfg),
 	}
@@ -166,6 +171,10 @@ type AgentConfigJSON struct {
 
 	// Channel integrations (Discord, Telegram, Slack)
 	Channels *ChannelsInstanceConfigJSON `json:"channels,omitempty"`
+
+	// Models merge mode configuration (OpenClaw-specific)
+	// When mergeModels is true, OpenClaw will merge harness providers with built-in providers
+	Models *ModelsMergeModeConfig `json:"models,omitempty"`
 }
 
 // ChannelsInstanceConfigJSON - Channel integrations for this Gateway instance
@@ -207,6 +216,9 @@ type DiscordChannelConfigJSON struct {
 
 	// Bot command prefix
 	CommandPrefix string `json:"commandPrefix,omitempty"`
+
+	// Require @mention to trigger bot response
+	MentionRequired bool `json:"mentionRequired,omitempty"`
 }
 
 // TelegramChannelConfigJSON - Telegram channel configuration from agentConfig
@@ -463,17 +475,24 @@ func (c *ConfigConverter) convertChannelsConfig(channels *ChannelsInstanceConfig
 	cfg := &ChannelsConfig{}
 
 	// Convert Discord configuration (v2026.5.7 schema)
+	// Note: Config Daemon resolves tokenSecretRef to actual token value before Handler reads it
 	if channels.Discord != nil {
 		// Use AllowFrom if provided directly, otherwise use AllowedUsers
 		allowFrom := channels.Discord.AllowFrom
 		if len(allowFrom) == 0 && len(channels.Discord.AllowedUsers) > 0 {
 			allowFrom = channels.Discord.AllowedUsers
 		}
+
+		// Use token directly - Config Daemon has already resolved tokenSecretRef
+		// If tokenSecretRef was in CRD, Config Daemon read Secret and wrote actual token
+		token := channels.Discord.Token
+
 		cfg.Discord = &DiscordConfig{
-			Enabled:   channels.Discord.Enabled,
-			Token:     channels.Discord.Token,
-			AllowFrom: allowFrom,
-			DmPolicy:  channels.Discord.DmPolicy,
+			Enabled:         channels.Discord.Enabled,
+			Token:           token,
+			AllowFrom:       allowFrom,
+			DmPolicy:        channels.Discord.DmPolicy,
+			MentionRequired: channels.Discord.MentionRequired,
 		}
 		// Set dmPolicy if allowFrom provided and dmPolicy not set
 		if len(allowFrom) > 0 && cfg.Discord.DmPolicy == "" {
@@ -638,20 +657,48 @@ func (c *ConfigConverter) convertAgentDefaultsFromHarness(harnessCfg *handler.Ha
 }
 
 // convertModelsConfig converts harness model config to OpenClaw models section.
-func (c *ConfigConverter) convertModelsConfig(harnessCfg *handler.HarnessConfig) *ModelsConfig {
+func (c *ConfigConverter) convertModelsConfig(harnessCfg *handler.HarnessConfig, agentConfig *AgentConfigJSON) *ModelsConfig {
 	if harnessCfg == nil || harnessCfg.Model == nil {
 		return nil
 	}
 
+	provider := harnessCfg.Model.Provider
 	modelsConfig := &ModelsConfig{
 		Providers: map[string]*ModelProviderConfig{},
 	}
 
-	provider := harnessCfg.Model.Provider
+	// Determine merge mode from agentConfig
+	// If agentConfig.Models.MergeModels is true, use "merge" mode
+	// Otherwise, use "" (default) which means providers are the only source
+	if agentConfig != nil && agentConfig.Models != nil && agentConfig.Models.MergeModels {
+		modelsConfig.Mode = "merge"
+	}
+
+	// Determine API type based on provider
+	apiType := "openai-completions"
+	if provider == "anthropic" {
+		apiType = "anthropic-messages"
+	}
+
+	// Get API key from environment variable (Controller injected PROVIDER_API_KEY)
+	apiKeyEnvVar := fmt.Sprintf("%s_API_KEY", provider)
+
 	modelsConfig.Providers[provider] = &ModelProviderConfig{
 		BaseURL: harnessCfg.Model.Endpoint,
-		APIKey:  harnessCfg.Model.AuthSecretRef,
+		APIKey:  apiKeyEnvVar,
+		API:     apiType,
 		Models:  c.convertModelListFromSpec(harnessCfg.Model.Models),
+	}
+
+	// Set default model in format "provider/model-id"
+	if len(harnessCfg.Model.Models) > 0 {
+		// Use the first allowed model as default
+		for _, m := range harnessCfg.Model.Models {
+			if m.Allowed {
+				modelsConfig.Default = provider + "/" + m.Name
+				break
+			}
+		}
 	}
 
 	return modelsConfig
@@ -736,8 +783,9 @@ func (c *ConfigConverter) convertModelListFromSpec(models []v1.ModelConfig) []*M
 	result := make([]*ModelDefinitionConfig, len(models))
 	for i, m := range models {
 		result[i] = &ModelDefinitionConfig{
-			ID:   m.Name,
-			Name: m.Name,
+			ID:            m.Name,
+			Name:          m.Name,
+			ContextWindow: int(m.ContextWindow),
 		}
 	}
 	return result
@@ -874,19 +922,31 @@ type SubagentsConfigOpenClaw struct {
 type ModelsConfig struct {
 	Mode      string                         `json:"mode,omitempty"`
 	Providers map[string]*ModelProviderConfig `json:"providers,omitempty"`
+	Default   string                         `json:"default,omitempty"`
+}
+
+// ModelsMergeModeConfig represents models merge mode configuration in agentConfig.
+// When mergeModels is true, OpenClaw will merge these providers with built-in providers.
+type ModelsMergeModeConfig struct {
+	// MergeModels indicates whether to merge with built-in model providers
+	// If true, OpenClaw config will have models.mode = "merge"
+	// If false or unset, providers will be the only source (mode = "" or "override")
+	MergeModels bool `json:"mergeModels,omitempty"`
 }
 
 // ModelProviderConfig represents a model provider.
 type ModelProviderConfig struct {
-	BaseURL string                     `json:"baseUrl,omitempty"`
-	APIKey  string                     `json:"apiKey,omitempty"`
-	Models  []*ModelDefinitionConfig   `json:"models,omitempty"`
+	BaseURL      string                   `json:"baseUrl,omitempty"`
+	APIKey       string                   `json:"apiKey,omitempty"`
+	API          string                   `json:"api,omitempty"` // "openai-completions" or "anthropic-messages"
+	Models       []*ModelDefinitionConfig `json:"models,omitempty"`
 }
 
 // ModelDefinitionConfig represents a model definition.
 type ModelDefinitionConfig struct {
-	ID   string `json:"id"`
-	Name string `json:"name,omitempty"`
+	ID            string `json:"id"`
+	Name          string `json:"name,omitempty"`
+	ContextWindow int    `json:"contextWindow,omitempty"`
 }
 
 // SkillsConfig represents skills configuration.
@@ -958,13 +1018,14 @@ type TelegramConfig struct {
 }
 
 // DiscordConfig represents Discord channel config for OpenClaw v2026.5.7.
-// Schema: enabled, token, allowFrom (user whitelist), dmPolicy, guilds
+// Schema: enabled, token, allowFrom (user whitelist), dmPolicy, guilds, mentionRequired
 type DiscordConfig struct {
-	Enabled    bool     `json:"enabled,omitempty"`
-	Token      string   `json:"token,omitempty"`
-	AllowFrom  []string `json:"allowFrom,omitempty"`      // User IDs whitelist (v2026.5.7)
-	DmPolicy   string   `json:"dmPolicy,omitempty"`       // "pairing" | "allowlist" | "open" | "disabled"
-	Guilds     map[string]interface{} `json:"guilds,omitempty"` // Guild-specific config (v2026.5.7)
+	Enabled        bool     `json:"enabled,omitempty"`
+	Token          string   `json:"token,omitempty"`
+	AllowFrom      []string `json:"allowFrom,omitempty"`      // User IDs whitelist (v2026.5.7)
+	DmPolicy       string   `json:"dmPolicy,omitempty"`       // "pairing" | "allowlist" | "open" | "disabled"
+	Guilds         map[string]interface{} `json:"guilds,omitempty"` // Guild-specific config (v2026.5.7)
+	MentionRequired bool    `json:"mentionRequired,omitempty"` // Require @mention to trigger bot
 }
 
 // SlackConfig represents Slack channel config.
