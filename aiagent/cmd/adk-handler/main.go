@@ -581,7 +581,8 @@ func loadAgentsFromIndex(ctx context.Context, h *adk.ADKHandler, indexPath strin
 		log.Printf("Generated config for %s at %s", entry.Name, configPath)
 
 		// Register agent with handler (this makes AgentCount accurate)
-		ag, err := h.LoadAgent(ctx, agentSpec, harnessCfg)
+		// Pass agent name (entry.Name) as the unique agent identifier
+		ag, err := h.LoadAgent(ctx, agentSpec, harnessCfg, entry.Name)
 		if err != nil {
 			log.Printf("Warning: failed to register agent %s: %v", entry.Name, err)
 		} else {

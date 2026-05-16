@@ -445,8 +445,14 @@ func (h *OpenClawHandler) AdaptSkillsHarness(harness handler.SkillsHarnessInterf
 // ============================================================
 
 // LoadAgent creates agent wrapper and prepares Gateway config.
-func (h *OpenClawHandler) LoadAgent(ctx context.Context, spec *v1.AIAgentSpec, harnessCfg *handler.HarnessConfig) (agent.Agent, error) {
-	agentID := spec.Description
+// IMPORTANT: Uses agentName (from AIAgent CRD metadata.name) as agentID, NOT spec.Description.
+func (h *OpenClawHandler) LoadAgent(ctx context.Context, spec *v1.AIAgentSpec, harnessCfg *handler.HarnessConfig, agentName string) (agent.Agent, error) {
+	// Use provided agentName as agentID (this is the AIAgent CRD metadata.name)
+	// If not provided, fall back to spec.Description (for backwards compatibility)
+	agentID := agentName
+	if agentID == "" {
+		agentID = spec.Description
+	}
 
 	// Save agentConfig for port resolution
 	if spec.AgentConfig != nil && spec.AgentConfig.Raw != nil {

@@ -21,10 +21,16 @@ rules:
 - apiGroups: ["agent.ai"]
   resources: ["agentruntimes/finalizers"]
   verbs: ["update"]
-# AIAgent permissions (needed for channel secret injection)
+# AIAgent permissions (needed for scheduling and status updates)
 - apiGroups: ["agent.ai"]
   resources: ["aiagents"]
-  verbs: ["get", "list", "watch"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["agent.ai"]
+  resources: ["aiagents/status"]
+  verbs: ["get", "update", "patch"]
+- apiGroups: ["agent.ai"]
+  resources: ["aiagents/finalizers"]
+  verbs: ["update"]
 # Harness permissions
 - apiGroups: ["agent.ai"]
   resources: ["harnesses"]
